@@ -144,49 +144,82 @@ def convert_euroc(mav0_dir: Path, workdir: Path, name: str = "euroc") -> Sequenc
     )
 
 
-# Base URL for the ASL "dataset" (mav0) zips, by sequence name.
-EUROC_ASL_BASE = "http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset"
-EUROC_SEQUENCES = {
-    # name: (collection, zip stem)
-    "MH_01_easy": ("machine_hall", "MH_01_easy"),
-    "MH_02_easy": ("machine_hall", "MH_02_easy"),
-    "V1_01_easy": ("vicon_room1", "V1_01_easy"),
-    "V2_01_easy": ("vicon_room2", "V2_01_easy"),
+# EuRoC is distributed via the ETH Research Collection as one zip *per collection* (the old
+# per-sequence ASL links are retired). Each collection zip bundles several sequences in ASL
+# (mav0) format. Download by bitstream UUID:
+#   https://www.research-collection.ethz.ch/server/api/core/bitstreams/<uuid>/content
+RESEARCH_COLLECTION_BITSTREAM = (
+    "https://www.research-collection.ethz.ch/server/api/core/bitstreams/{uuid}/content"
+)
+EUROC_COLLECTIONS: dict[str, str] = {
+    "machine_hall": "7b2419c1-62b5-4714-b7f8-485e5fe3e5fe",
+    "vicon_room1": "02ecda9a-298f-498b-970c-b7c44334d880",
+    "vicon_room2": "ea12bc01-3677-4b4c-853d-87c7870b8c44",
+    "calibration_datasets": "5732e864-10f1-49e7-befb-669ee29ff770",
+}
+# Sequence → collection it lives in.
+EUROC_SEQUENCES: dict[str, str] = {
+    "MH_01_easy": "machine_hall",
+    "MH_02_easy": "machine_hall",
+    "MH_03_medium": "machine_hall",
+    "MH_04_difficult": "machine_hall",
+    "MH_05_difficult": "machine_hall",
+    "V1_01_easy": "vicon_room1",
+    "V1_02_medium": "vicon_room1",
+    "V1_03_difficult": "vicon_room1",
+    "V2_01_easy": "vicon_room2",
+    "V2_02_medium": "vicon_room2",
+    "V2_03_difficult": "vicon_room2",
 }
 
 
-def euroc_download_url(seq_name: str) -> str:
-    """Return the ASL download URL for an EuRoC sequence zip."""
+def euroc_collection(seq_name: str) -> str:
+    """Return the collection a sequence belongs to."""
     if seq_name not in EUROC_SEQUENCES:
         raise KeyError(f"unknown EuRoC sequence {seq_name!r}; known: {sorted(EUROC_SEQUENCES)}")
-    collection, stem = EUROC_SEQUENCES[seq_name]
-    return f"{EUROC_ASL_BASE}/{collection}/{stem}/{stem}.zip"
+    return EUROC_SEQUENCES[seq_name]
 
 
-def download_euroc(seq_name: str, dest_dir: Path) -> Path:
-    """Download + unzip an EuRoC sequence, returning its ``mav0/`` directory.
+def euroc_download_url(seq_name: str) -> str:
+    """Return the ETH Research Collection download URL for the *collection* zip that
+    contains ``seq_name``."""
+    uuid = EUROC_COLLECTIONS[euroc_collection(seq_name)]
+    return RESEARCH_COLLECTION_BITSTREAM.format(uuid=uuid)
 
-    The zip is ~1–2 GB (it bundles imagery we don't use for the IMU baseline), so this is
-    an operator step, never run in CI. CI and unit tests use the committed mini fixture.
+
+def _euroc_seq_prefix(seq_name: str) -> str:
+    """Short id used to match a sequence's directory, e.g. ``MH_01_easy`` → ``MH_01``."""
+    return "_".join(seq_name.split("_")[:2])
+
+
+def locate_euroc_mav0(extracted_root: Path, seq_name: str) -> Path:
+    """Find a sequence's ``mav0/`` directory inside an extracted collection.
+
+    Handles both layouts seen in the wild: a per-sequence directory containing ``mav0``,
+    or a nested per-sequence zip that must be unpacked first.
     """
-    import urllib.request
     import zipfile
 
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    url = euroc_download_url(seq_name)
-    zip_path = dest_dir / f"{seq_name}.zip"
-    if not zip_path.exists():
-        print(f"downloading {url} -> {zip_path}")
-        urllib.request.urlretrieve(url, zip_path)
-    extract_dir = dest_dir / seq_name
-    with zipfile.ZipFile(zip_path) as zf:
-        zf.extractall(extract_dir)
-    # The ASL zip may place mav0 at the root or one level down.
-    for candidate in (extract_dir / "mav0", *extract_dir.glob("*/mav0")):
-        if candidate.is_dir():
-            return candidate
-    raise FileNotFoundError(f"no mav0/ directory found under {extract_dir}")
+    root = Path(extracted_root)
+    prefix = _euroc_seq_prefix(seq_name)
+
+    def matches(path: Path) -> bool:
+        return any(p == seq_name or p.startswith(prefix) for p in path.parts)
+
+    for mav0 in sorted(root.rglob("mav0")):
+        if mav0.is_dir() and matches(mav0):
+            return mav0
+
+    for nested in sorted(root.rglob("*.zip")):
+        if nested.stem == seq_name or nested.stem.startswith(prefix):
+            out = nested.with_suffix("")
+            with zipfile.ZipFile(nested) as zf:
+                zf.extractall(out)
+            for mav0 in sorted(out.rglob("mav0")):
+                if mav0.is_dir():
+                    return mav0
+
+    raise FileNotFoundError(f"no mav0/ for {seq_name!r} under {root}")
 
 
 # --------------------------------------------------------------------------------------

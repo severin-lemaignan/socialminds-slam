@@ -58,7 +58,7 @@ $(VENV): eval/requirements.txt
 # ---- Dataset download + cache ---------------------------------------------------------
 
 .PHONY: data-euroc
-data-euroc: $(VENV) ## Download an EuRoC sequence (SEQ=MH_01_easy)
+data-euroc: $(VENV) ## Download the EuRoC collection for SEQ (SEQ=MH_01_easy) — large
 	@test -n "$(SEQ)" || (echo "usage: make data-euroc SEQ=MH_01_easy" && false)
 	cd eval && SLAM_DATA_DIR=$(SLAM_DATA_DIR) . .venv/bin/activate && python -m harness.fetch euroc $(SEQ)
 

@@ -51,7 +51,7 @@ Datasets are cached under `$SLAM_DATA_DIR` (default `<repo>/data`, git-ignored).
 `make` targets (from the repo root) or the `fetch` module directly:
 
 ```bash
-make data-euroc SEQ=MH_01_easy      # EuRoC IMU+GT (small)
+make data-euroc SEQ=MH_01_easy      # EuRoC: fetches the whole collection (e.g. machine_hall.zip)
 make data-openloris-gt              # OpenLORIS ground truth (~11 MB)
 make data-openloris SCENE=office1   # OpenLORIS scene rosbags (LARGE: 6–33 GB)
 ```

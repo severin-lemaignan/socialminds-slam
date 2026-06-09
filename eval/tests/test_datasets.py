@@ -59,12 +59,30 @@ def test_convert_euroc_missing_files(tmp_path):
         datasets.convert_euroc(tmp_path, tmp_path / "out", name="missing")
 
 
-def test_euroc_download_url():
-    assert datasets.euroc_download_url("MH_01_easy").endswith(
-        "machine_hall/MH_01_easy/MH_01_easy.zip"
+def test_euroc_download_url_uses_research_collection():
+    # MH_01_easy lives in the machine_hall collection → that collection's bitstream UUID.
+    url = datasets.euroc_download_url("MH_01_easy")
+    assert url == (
+        "https://www.research-collection.ethz.ch/server/api/core/bitstreams/"
+        "7b2419c1-62b5-4714-b7f8-485e5fe3e5fe/content"
     )
+    # Sequences in the same collection share the URL.
+    assert datasets.euroc_download_url("MH_05_difficult") == url
+    assert datasets.euroc_collection("V2_03_difficult") == "vicon_room2"
     with pytest.raises(KeyError):
         datasets.euroc_download_url("does_not_exist")
+
+
+def test_locate_euroc_mav0(tmp_path):
+    # Collection layout: <collection>/<sequence>/mav0/...
+    mav0 = tmp_path / "machine_hall" / "MH_03_medium" / "mav0"
+    (mav0 / "imu0").mkdir(parents=True)
+    found = datasets.locate_euroc_mav0(tmp_path, "MH_03_medium")
+    assert found == mav0
+    # Prefix match works even if the dir drops the difficulty suffix.
+    alt = tmp_path / "vicon_room1" / "V1_01" / "mav0"
+    alt.mkdir(parents=True)
+    assert datasets.locate_euroc_mav0(tmp_path / "vicon_room1", "V1_01_easy") == alt
 
 
 def test_materialize_synthetic(tmp_path):

@@ -80,10 +80,27 @@ def download_file(url: str, dest: Path, *, resume: bool = True) -> Path:
 # --------------------------------------------------------------------------------------
 
 def fetch_euroc(seq_name: str, *, root: Path | None = None) -> Path:
-    """Download an EuRoC sequence zip into the cache; return its path."""
+    """Download + extract the EuRoC collection containing ``seq_name``; return its ``mav0/``.
+
+    EuRoC is now hosted on the ETH Research Collection as one zip per *collection* (e.g.
+    ``machine_hall.zip`` bundles MH_01..MH_05), so the whole collection is fetched and
+    cached once; sequences from it reuse the extraction.
+    """
+    import zipfile
+
     root = root or cache_root()
+    collection = datasets.euroc_collection(seq_name)
     url = datasets.euroc_download_url(seq_name)
-    return download_file(url, root / "euroc" / f"{seq_name}.zip")
+    zip_path = download_file(url, root / "euroc" / f"{collection}.zip")
+
+    extract_dir = root / "euroc" / collection
+    marker = extract_dir / ".extracted"
+    if not marker.exists():
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+        marker.touch()
+    return datasets.locate_euroc_mav0(extract_dir, seq_name)
 
 
 def fetch_openloris_scene(scene: str, *, root: Path | None = None) -> list[Path]:
