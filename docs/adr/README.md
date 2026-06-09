@@ -12,3 +12,4 @@ get the next number; superseded ones are marked, not deleted. Use
 | [0004](0004-map-representation.md) | `Map` trait with multiple backends (GPU TSDF/ESDF + OpenVDB) | accepted |
 | [0005](0005-evaluation-methodology.md) | Evaluation-first; trivial baselines before novel algorithms | accepted |
 | [0006](0006-vendored-gtsam-build.md) | Vendor GTSAM as a pinned submodule, built static and Boost-free by cargo | accepted |
+| [0007](0007-frontend-order-and-scan-matching.md) | Front-end order: 2D scan matching first, as point-to-line ICP | accepted |

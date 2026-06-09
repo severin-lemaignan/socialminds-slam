@@ -7,6 +7,7 @@ members = [
     "crates/slam-replay",
     "crates/slam-gtsam-sys",
     "crates/slam-backend",
+    "crates/slam-frontend-scan",
 ]
 
 [workspace.package]
@@ -33,6 +34,7 @@ slam-types = { path = "crates/slam-types" }
 slam-baseline = { path = "crates/slam-baseline" }
 slam-gtsam-sys = { path = "crates/slam-gtsam-sys" }
 slam-backend = { path = "crates/slam-backend" }
+slam-frontend-scan = { path = "crates/slam-frontend-scan" }
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,16 @@
+[package]
+name = "slam-frontend-scan"
+description = "2D planar scan-matching odometry: trimmed point-to-line ICP, scan-to-keyframe (ADR 0007)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+slam-types.workspace = true
+nalgebra.workspace = true
+
+[dev-dependencies]
+approx = "0.5"
