@@ -59,8 +59,10 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
 ## Repo layout & workflow
 - `crates/` Rust workspace (middleware-independent core) · `docs/` (+ `docs/adr/`) ·
   `eval/` CPU-only Python harness.
-- **Commit hygiene:** small, logically-grouped commits with clear messages. Bootstrap work
-  on `bootstrap/foundations`; `main` is the default branch — branch for new work.
+- **Commit hygiene:** small, logically-grouped commits with clear messages.
+- **Remotes:** `origin` → GitLab (`gitlab.iiia.csic.es`) is the real one **where CI runs**;
+  `github` is a mirror that receives commits via the user's own tooling (auto-push is
+  expected). The M0 bootstrap landed directly on `main`.
 - **CI runs on GitLab** (`.gitlab-ci.yml`), CPU-only: fmt + clippy(-D warnings) + tests,
   then the gated `eval` self-test benchmark. There is no GitHub Actions.
 - **Always:** keep CI green, measure changes with the harness, give every GPU path a CPU
