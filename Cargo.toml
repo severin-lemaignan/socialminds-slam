@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/slam-types",
     "crates/slam-baseline",
+    "crates/slam-datasets",
     "crates/slam-replay",
 ]
 

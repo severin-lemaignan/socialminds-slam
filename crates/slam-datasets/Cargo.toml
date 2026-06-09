@@ -1,0 +1,20 @@
+[package]
+name = "slam-datasets"
+description = "Dataset ingestion: read sensor streams from recorded logs (ROS1 bags) into engine types."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+slam-types.workspace = true
+rosbag = "0.6"
+thiserror.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+
+[[bin]]
+name = "slam-bag2imu"
+path = "src/bin/bag2imu.rs"
