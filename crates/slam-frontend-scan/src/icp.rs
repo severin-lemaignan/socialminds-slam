@@ -185,6 +185,9 @@ pub struct ScanMatcher {
     cfg: MatchConfig,
     reference: Vec<Vec2>,
     grid: Grid,
+    /// Correspondence scratch space, reused across iterations and calls (hot path:
+    /// no allocation after the first match).
+    scratch: Vec<Correspondence>,
 }
 
 impl ScanMatcher {
@@ -195,6 +198,7 @@ impl ScanMatcher {
             cfg,
             reference,
             grid,
+            scratch: Vec::new(),
         }
     }
 
@@ -207,10 +211,25 @@ impl ScanMatcher {
     /// Returns `None` when there are never enough gated correspondences to solve (scan
     /// content mismatch, bad initial guess beyond the gate, or degenerate geometry where
     /// the normal equations lose rank).
-    pub fn match_to(&self, current: &[Vec2], initial: Se2) -> Option<MatchResult> {
+    pub fn match_to(&mut self, current: &[Vec2], initial: Se2) -> Option<MatchResult> {
+        // The scratch buffer moves in and out by value so the hot loop pushes into a
+        // plain local Vec — zero allocation after warm-up, zero indirection.
+        let corr = std::mem::take(&mut self.scratch);
+        let (mut corr, result) = self.match_inner(current, initial, corr);
+        corr.clear();
+        self.scratch = corr;
+        result
+    }
+
+    fn match_inner(
+        &self,
+        current: &[Vec2],
+        initial: Se2,
+        mut corr: Vec<Correspondence>,
+    ) -> (Vec<Correspondence>, Option<MatchResult>) {
         let (cfg, reference, grid) = (&self.cfg, &self.reference[..], &self.grid);
         if reference.len() < cfg.min_correspondences || current.len() < cfg.min_correspondences {
-            return None;
+            return (corr, None);
         }
 
         let mut transform = initial;
@@ -223,7 +242,7 @@ impl ScanMatcher {
             iterations = iter + 1;
 
             // ---- Correspondences at the current estimate ----------------------------
-            let mut corr: Vec<Correspondence> = Vec::with_capacity(current.len());
+            corr.clear();
             for &p in current {
                 let q = transform.apply(p);
                 let Some((i, j, _)) = grid.two_nearest(reference, q) else {
@@ -267,7 +286,7 @@ impl ScanMatcher {
             // ---- Trim the worst residuals --------------------------------------------
             let keep = ((corr.len() as f64) * (1.0 - cfg.trim_ratio)).floor() as usize;
             if keep < cfg.min_correspondences {
-                return None;
+                return (corr, None);
             }
             corr.select_nth_unstable_by(keep - 1, |a, b| {
                 a.residual.abs().total_cmp(&b.residual.abs())
@@ -278,7 +297,7 @@ impl ScanMatcher {
             let mut h = Matrix3::<f64>::zeros();
             let mut g = Vector3::<f64>::zeros();
             let mut abs_sum = 0.0;
-            for c in &corr {
+            for c in corr.iter() {
                 let q = transform.apply(c.point);
                 // d(R(θ)p + t)/dθ at the current estimate = (−q_y, q_x) about the origin.
                 let jac =
@@ -290,7 +309,9 @@ impl ScanMatcher {
             mean_residual = abs_sum / keep as f64;
             inlier_fraction = keep as f64 / current.len() as f64;
 
-            let delta = h.cholesky().map(|ch| ch.solve(&(-g)))?;
+            let Some(delta) = h.cholesky().map(|ch| ch.solve(&(-g))) else {
+                return (corr, None);
+            };
 
             // Left-multiply the increment (it was linearised in the reference frame).
             transform = Se2::new(delta.x, delta.y, delta.z).compose(&transform);
@@ -303,13 +324,16 @@ impl ScanMatcher {
             }
         }
 
-        Some(MatchResult {
-            transform,
-            iterations,
-            mean_residual,
-            inlier_fraction,
-            converged,
-        })
+        (
+            corr,
+            Some(MatchResult {
+                transform,
+                iterations,
+                mean_residual,
+                inlier_fraction,
+                converged,
+            }),
+        )
     }
 }
 
@@ -324,6 +348,24 @@ pub fn match_scans(
     cfg: &MatchConfig,
 ) -> Option<MatchResult> {
     ScanMatcher::new(reference.to_vec(), cfg.clone()).match_to(current, initial)
+}
+
+#[cfg(test)]
+mod scratch_tests {
+    use super::*;
+
+    #[test]
+    fn scratch_buffer_is_reused_across_matches() {
+        let pts: Vec<Vec2> = (0..100)
+            .map(|i| Vec2::new(i as f64 * 0.05, (i % 2) as f64 * 0.01))
+            .collect();
+        let mut matcher = ScanMatcher::new(pts.clone(), MatchConfig::default());
+        matcher.match_to(&pts, Se2::identity()).unwrap();
+        let cap = matcher.scratch.capacity();
+        assert!(cap >= 80, "scratch should retain capacity: {cap}");
+        matcher.match_to(&pts, Se2::identity()).unwrap();
+        assert_eq!(matcher.scratch.capacity(), cap, "no reallocation on reuse");
+    }
 }
 
 #[cfg(test)]

@@ -83,7 +83,7 @@ fn bench_match(c: &mut Criterion) {
     // The scan-to-keyframe shape: the reference is indexed once, matched ten times.
     c.bench_function("match_scans/720pts/keyframe_reuse_x10", |b| {
         b.iter(|| {
-            let matcher = ScanMatcher::new(reference.clone(), cfg.clone());
+            let mut matcher = ScanMatcher::new(reference.clone(), cfg.clone());
             let mut last = Se2::identity();
             for _ in 0..10 {
                 last = matcher

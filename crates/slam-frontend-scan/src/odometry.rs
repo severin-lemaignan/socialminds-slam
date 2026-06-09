@@ -70,6 +70,8 @@ pub struct ScanOdometry {
     last_motion: Se2,
     last_stamp: Option<Stamp>,
     stats: ScanOdometryStats,
+    /// Reused scan-point buffer (surrendered to the matcher on keyframe adoption).
+    points_buf: Vec<Vec2>,
 }
 
 impl ScanOdometry {
@@ -87,6 +89,7 @@ impl ScanOdometry {
             last_motion: Se2::identity(),
             last_stamp: None,
             stats: ScanOdometryStats::default(),
+            points_buf: Vec::new(),
         }
     }
 
@@ -110,13 +113,15 @@ impl SlamSystem for ScanOdometry {
 
     fn process_scan(&mut self, scan: &LaserScan2D) {
         self.stats.scans += 1;
-        let points = scan.points();
+        let mut points = std::mem::take(&mut self.points_buf);
+        scan.points_into(&mut points);
         if points.len() < self.cfg.min_valid_points {
             self.stats.skipped += 1;
+            self.points_buf = points;
             return; // estimate (and its stamp) unchanged: nothing was learned
         }
 
-        let Some(keyframe) = &self.keyframe else {
+        let Some(keyframe) = &mut self.keyframe else {
             self.last_stamp = Some(scan.stamp);
             self.adopt_keyframe(points);
             return;
@@ -142,6 +147,8 @@ impl SlamSystem for ScanOdometry {
                     || result.transform.theta.abs() > self.cfg.keyframe_rotation
                 {
                     self.adopt_keyframe(points);
+                } else {
+                    self.points_buf = points;
                 }
             }
             None => {

@@ -54,18 +54,23 @@ impl LaserScan2D {
     /// Cartesian points in the sensor frame (x forward, y left), keeping only valid
     /// returns: finite and inside `[range_min, range_max]`.
     pub fn points(&self) -> Vec<Vec2> {
-        self.ranges
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &r)| {
-                let r = r as f64;
-                if !r.is_finite() || r < self.range_min || r > self.range_max {
-                    return None;
-                }
-                let angle = self.angle_min + i as f64 * self.angle_increment;
-                Some(Vec2::new(r * angle.cos(), r * angle.sin()))
-            })
-            .collect()
+        let mut out = Vec::new();
+        self.points_into(&mut out);
+        out
+    }
+
+    /// Like [`points`](Self::points), but reusing `out`'s allocation (hot-path variant:
+    /// a scan stream converts at sensor rate, so per-scan allocation is avoidable waste).
+    pub fn points_into(&self, out: &mut Vec<Vec2>) {
+        out.clear();
+        out.extend(self.ranges.iter().enumerate().filter_map(|(i, &r)| {
+            let r = r as f64;
+            if !r.is_finite() || r < self.range_min || r > self.range_max {
+                return None;
+            }
+            let angle = self.angle_min + i as f64 * self.angle_increment;
+            Some(Vec2::new(r * angle.cos(), r * angle.sin()))
+        }));
     }
 }
 
