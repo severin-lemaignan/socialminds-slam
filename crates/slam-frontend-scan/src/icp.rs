@@ -58,41 +58,100 @@ pub struct MatchResult {
 
 /// Uniform-grid 2-nearest-neighbour index over the reference points.
 ///
-/// Cell size = the correspondence gate, so the 3×3 neighbourhood of a query's cell
-/// provably contains every point within the gate. O(1) build per point, O(1) query on
-/// indoor scan densities — no tree, no heap allocations per query.
+/// Dense CSR layout over the reference bounding box: cell size = the correspondence
+/// gate, so the 3×3 neighbourhood of a query's cell provably contains every point within
+/// the gate. A lidar's extent is sensor-bounded (`range_max`, tens of metres) so the
+/// dense grid is a few thousand cells — lookups are plain array indexing, no hashing.
 struct Grid {
     cell: f64,
-    map: std::collections::HashMap<(i32, i32), Vec<u32>>,
+    min_x: f64,
+    min_y: f64,
+    nx: i32,
+    ny: i32,
+    /// CSR: cell `c` holds `items[starts[c] .. starts[c + 1]]`.
+    starts: Vec<u32>,
+    items: Vec<u32>,
 }
 
 impl Grid {
     fn build(points: &[Vec2], cell: f64) -> Grid {
-        let mut map: std::collections::HashMap<(i32, i32), Vec<u32>> =
-            std::collections::HashMap::with_capacity(points.len());
-        for (i, p) in points.iter().enumerate() {
-            map.entry(Self::key(p, cell)).or_default().push(i as u32);
+        let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
+        let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+        for p in points {
+            min_x = min_x.min(p.x);
+            min_y = min_y.min(p.y);
+            max_x = max_x.max(p.x);
+            max_y = max_y.max(p.y);
         }
-        Grid { cell, map }
-    }
+        if points.is_empty() {
+            return Grid {
+                cell,
+                min_x: 0.0,
+                min_y: 0.0,
+                nx: 0,
+                ny: 0,
+                starts: vec![0],
+                items: Vec::new(),
+            };
+        }
+        let nx = ((max_x - min_x) / cell).floor() as i64 + 1;
+        let ny = ((max_y - min_y) / cell).floor() as i64 + 1;
+        let ncells = (nx * ny) as usize;
+        assert!(
+            ncells <= 1 << 24,
+            "scan extent {nx}x{ny} cells is not sensor-bounded data"
+        );
+        let (nx, ny) = (nx as i32, ny as i32);
 
-    #[inline]
-    fn key(p: &Vec2, cell: f64) -> (i32, i32) {
-        ((p.x / cell).floor() as i32, (p.y / cell).floor() as i32)
+        let cell_of = |p: &Vec2| -> usize {
+            let cx = ((p.x - min_x) / cell).floor() as i32;
+            let cy = ((p.y - min_y) / cell).floor() as i32;
+            cx as usize * ny as usize + cy as usize
+        };
+
+        // Counting sort into CSR.
+        let mut starts = vec![0u32; ncells + 1];
+        for p in points {
+            starts[cell_of(p) + 1] += 1;
+        }
+        for c in 0..ncells {
+            starts[c + 1] += starts[c];
+        }
+        let mut cursor = starts.clone();
+        let mut items = vec![0u32; points.len()];
+        for (i, p) in points.iter().enumerate() {
+            let c = cell_of(p);
+            items[cursor[c] as usize] = i as u32;
+            cursor[c] += 1;
+        }
+
+        Grid {
+            cell,
+            min_x,
+            min_y,
+            nx,
+            ny,
+            starts,
+            items,
+        }
     }
 
     /// Indices of the two nearest reference points within the gate, nearest first.
     fn two_nearest(&self, points: &[Vec2], q: Vec2) -> Option<(u32, Option<u32>, f64)> {
         // (squared distance, point index) of a nearest-so-far candidate.
         type Candidate = Option<(f64, u32)>;
-        let (kx, ky) = Self::key(&q, self.cell);
+        let kx = ((q.x - self.min_x) / self.cell).floor() as i32;
+        let ky = ((q.y - self.min_y) / self.cell).floor() as i32;
+        // More than one cell outside the bounding box → nothing can be within the gate.
+        if kx < -1 || kx > self.nx || ky < -1 || ky > self.ny {
+            return None;
+        }
         let gate2 = self.cell * self.cell;
         let (mut best, mut second): (Candidate, Candidate) = (None, None);
-        for dx in -1..=1 {
-            for dy in -1..=1 {
-                let Some(bucket) = self.map.get(&(kx + dx, ky + dy)) else {
-                    continue;
-                };
+        for cx in (kx - 1).max(0)..=(kx + 1).min(self.nx - 1) {
+            for cy in (ky - 1).max(0)..=(ky + 1).min(self.ny - 1) {
+                let c = cx as usize * self.ny as usize + cy as usize;
+                let bucket = &self.items[self.starts[c] as usize..self.starts[c + 1] as usize];
                 for &i in bucket {
                     let d2 = (points[i as usize] - q).norm_squared();
                     if d2 > gate2 {
