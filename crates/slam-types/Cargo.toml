@@ -1,0 +1,16 @@
+[package]
+name = "slam-types"
+description = "Foundational types for the SLAM engine: time, SE(3), sensor samples, trajectories, TUM I/O."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+nalgebra.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+approx = "0.5"

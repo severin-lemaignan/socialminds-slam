@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/slam-types",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.94"
+license = "Apache-2.0"
+repository = "https://github.com/severin-lemaignan/socialminds-slam"
+authors = ["Séverin Lemaignan <severin@guakamole.org>"]
+
+[workspace.dependencies]
+# Core math. nalgebra is the dense small-matrix workhorse (SLAM is full of
+# 6x6 / 15x15 blocks). See ADR 0001.
+nalgebra = "0.33"
+# Errors & CLI for binaries / tooling.
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+
+# Internal crates
+slam-types = { path = "crates/slam-types" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,23 @@
+//! Foundational types shared across the SLAM engine.
+//!
+//! This crate is deliberately small and dependency-light: time, rigid-body geometry,
+//! sensor samples, and trajectories with TUM-format I/O. Everything downstream speaks in
+//! these types, so they are the natural place for the zero-copy data structures that will
+//! later cross the Python/C++ FFI boundary (see ADR 0001).
+//!
+//! Conventions:
+//! - Time is integer nanoseconds ([`time::Stamp`]); seconds are for I/O only.
+//! - Geometry is `f64`; poses are SE(3) mapping *body → reference* frame.
+//! - Quaternions are stored/exchanged as `(x, y, z, w)`, matching TUM and ROS.
+
+#![forbid(unsafe_code)]
+
+pub mod geometry;
+pub mod sensor;
+pub mod time;
+pub mod trajectory;
+
+pub use geometry::{Pose, Rotation, Vec3};
+pub use sensor::ImuSample;
+pub use time::{Duration, Stamp};
+pub use trajectory::{StampedPose, Trajectory, TumParseError};
