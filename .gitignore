@@ -1,0 +1,26 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Python (eval harness)
+__pycache__/
+*.py[cod]
+.venv/
+eval/.venv/
+
+# Eval artifacts & datasets (large / reproducible — never committed)
+/data/
+/datasets/
+eval/results/
+eval/_run/
+*.tum
+*.bag
+*.mcap
+!eval/**/fixtures/**/*.tum
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
