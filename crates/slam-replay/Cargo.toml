@@ -15,5 +15,6 @@ path = "src/main.rs"
 [dependencies]
 slam-types.workspace = true
 slam-baseline.workspace = true
+slam-frontend-scan.workspace = true
 anyhow.workspace = true
 clap.workspace = true

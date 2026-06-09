@@ -1,9 +1,10 @@
 //! `slam-replay`: drive a [`SlamSystem`] over recorded sensor input, emit a TUM trajectory.
 //!
-//! For M0/M1 the only input is an IMU CSV and the only systems are the trivial baselines.
-//! As real front-ends and dataset adapters arrive, this binary gains input formats and
-//! system choices while keeping the same "inputs → TUM trajectory" contract the harness
-//! depends on. With `--metrics` it also writes a compute-metrics JSON sidecar.
+//! Inputs are recorded streams (IMU CSV, scan CSV); whatever is provided is merged into
+//! one time-ordered event stream and fed to the chosen system — each system consumes the
+//! streams it understands and ignores the rest. The "inputs → TUM trajectory" contract
+//! the harness depends on never changes. With `--metrics` it also writes a
+//! compute-metrics JSON sidecar.
 
 mod metrics;
 
@@ -11,34 +12,41 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use slam_baseline::{ImuDeadReckoning, SlamSystem, Stationary};
-use slam_types::{ImuSample, Pose, Trajectory, Vec3};
+use slam_baseline::{ImuDeadReckoning, Stationary};
+use slam_frontend_scan::{ScanOdometry, ScanOdometryConfig};
+use slam_types::{ImuSample, LaserScan2D, Pose, SlamSystem, Stamp, Trajectory, Vec3};
 
 use metrics::ProcessingMetrics;
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
-enum Baseline {
+enum System {
     /// Fixed pose; the sanity floor.
     Stationary,
     /// IMU strapdown integration.
     DeadReckoning,
+    /// 2D scan-to-keyframe odometry (point-to-line ICP, ADR 0007).
+    ScanMatching,
 }
 
 #[derive(Parser, Debug)]
 #[command(
     name = "slam-replay",
-    about = "Run a baseline SLAM system over recorded input and write a TUM trajectory."
+    about = "Run a SLAM system over recorded input and write a TUM trajectory."
 )]
 struct Args {
-    /// Which system to run.
-    #[arg(long, value_enum)]
-    baseline: Baseline,
+    /// Which system to run. (Flag named --baseline for harness compatibility.)
+    #[arg(long = "baseline", value_enum)]
+    system: System,
 
     /// IMU CSV input (`t gx gy gz ax ay az`).
     #[arg(long, value_name = "FILE")]
-    imu: PathBuf,
+    imu: Option<PathBuf>,
+
+    /// Scan CSV input (`t angle_min angle_increment range_min range_max n r…`).
+    #[arg(long, value_name = "FILE")]
+    scan: Option<PathBuf>,
 
     /// Output TUM trajectory file. Defaults to stdout.
     #[arg(long, value_name = "FILE")]
@@ -99,29 +107,74 @@ fn initial_state_from_tum(path: &Path) -> Result<InitialState> {
     })
 }
 
-/// Run the system over the samples, collecting the trajectory and per-sample latencies.
+/// One time-stamped sensor event from any input stream.
+enum Event<'a> {
+    Imu(&'a ImuSample),
+    Scan(&'a LaserScan2D),
+}
+
+impl Event<'_> {
+    fn stamp(&self) -> Stamp {
+        match self {
+            Event::Imu(s) => s.stamp,
+            Event::Scan(s) => s.stamp,
+        }
+    }
+}
+
+/// Merge the input streams into one stamp-ordered event sequence (stable two-pointer:
+/// equal stamps deliver IMU first, so inertial state is current when a scan lands).
+fn merged_events<'a>(imu: &'a [ImuSample], scans: &'a [LaserScan2D]) -> Vec<Event<'a>> {
+    let mut events = Vec::with_capacity(imu.len() + scans.len());
+    let (mut i, mut s) = (0, 0);
+    while i < imu.len() || s < scans.len() {
+        let take_imu = match (imu.get(i), scans.get(s)) {
+            (Some(a), Some(b)) => a.stamp <= b.stamp,
+            (Some(_), None) => true,
+            _ => false,
+        };
+        if take_imu {
+            events.push(Event::Imu(&imu[i]));
+            i += 1;
+        } else {
+            events.push(Event::Scan(&scans[s]));
+            s += 1;
+        }
+    }
+    events
+}
+
+/// Run the system over the events, collecting the trajectory and per-event latencies.
+/// An estimate is recorded whenever its stamp advances (no duplicates for ignored events).
 fn run_timed(
     system: &mut dyn SlamSystem,
-    samples: &[ImuSample],
+    events: &[Event],
 ) -> (Trajectory, Vec<u64>, std::time::Duration) {
     let mut traj = Trajectory::new();
-    let mut latencies = Vec::with_capacity(samples.len());
+    let mut latencies = Vec::with_capacity(events.len());
+    let mut last_stamp: Option<Stamp> = None;
     let start = Instant::now();
-    for s in samples {
+    for event in events {
         let t0 = Instant::now();
-        system.process_imu(s);
+        match event {
+            Event::Imu(sample) => system.process_imu(sample),
+            Event::Scan(scan) => system.process_scan(scan),
+        }
         let est = system.current_estimate();
         latencies.push(t0.elapsed().as_nanos() as u64);
         if let Some(est) = est {
-            traj.push(est);
+            if last_stamp != Some(est.stamp) {
+                traj.push(est);
+                last_stamp = Some(est.stamp);
+            }
         }
     }
     (traj, latencies, start.elapsed())
 }
 
-fn input_span_seconds(samples: &[ImuSample]) -> f64 {
-    match (samples.first(), samples.last()) {
-        (Some(a), Some(b)) => (b.stamp - a.stamp).as_seconds(),
+fn input_span_seconds(events: &[Event]) -> f64 {
+    match (events.first(), events.last()) {
+        (Some(a), Some(b)) => (b.stamp() - a.stamp()).as_seconds(),
         _ => 0.0,
     }
 }
@@ -129,32 +182,64 @@ fn input_span_seconds(samples: &[ImuSample]) -> f64 {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let file = std::fs::File::open(&args.imu)
-        .with_context(|| format!("opening IMU file {}", args.imu.display()))?;
-    let samples = slam_types::read_imu(io::BufReader::new(file))
-        .with_context(|| format!("reading IMU file {}", args.imu.display()))?;
+    let imu: Vec<ImuSample> = match &args.imu {
+        Some(path) => {
+            let file = std::fs::File::open(path)
+                .with_context(|| format!("opening IMU file {}", path.display()))?;
+            slam_types::read_imu(io::BufReader::new(file))
+                .with_context(|| format!("reading IMU file {}", path.display()))?
+        }
+        None => Vec::new(),
+    };
+    let scans: Vec<LaserScan2D> = match &args.scan {
+        Some(path) => {
+            let file = std::fs::File::open(path)
+                .with_context(|| format!("opening scan file {}", path.display()))?;
+            slam_types::read_scans(io::BufReader::new(file))
+                .with_context(|| format!("reading scan file {}", path.display()))?
+        }
+        None => Vec::new(),
+    };
+
+    // Each system needs its primary stream; running it on silence is a usage error.
+    match args.system {
+        System::Stationary | System::DeadReckoning if imu.is_empty() => {
+            bail!("this system consumes IMU data: pass --imu")
+        }
+        System::ScanMatching if scans.is_empty() => {
+            bail!("scan-matching consumes laser scans: pass --scan")
+        }
+        _ => {}
+    }
 
     let init = match &args.init_pose_from_tum {
         Some(path) => initial_state_from_tum(path)?,
         None => InitialState::default(),
     };
 
-    let mut system: Box<dyn SlamSystem> = match args.baseline {
-        Baseline::Stationary => Box::new(Stationary::anchored_at(init.pose)),
-        Baseline::DeadReckoning => Box::new(ImuDeadReckoning::with_initial_state(
+    let mut system: Box<dyn SlamSystem> = match args.system {
+        System::Stationary => Box::new(Stationary::anchored_at(init.pose)),
+        System::DeadReckoning => Box::new(ImuDeadReckoning::with_initial_state(
             init.pose,
             init.velocity,
             args.gravity,
         )),
+        System::ScanMatching => Box::new(ScanOdometry::anchored_at(
+            init.pose,
+            ScanOdometryConfig::default(),
+        )),
     };
 
-    let (traj, latencies, wall) = run_timed(system.as_mut(), &samples);
-    let span = input_span_seconds(&samples);
-    let m = ProcessingMetrics::new(system.name(), samples.len(), span, wall, latencies);
+    let events = merged_events(&imu, &scans);
+    let (traj, latencies, wall) = run_timed(system.as_mut(), &events);
+    let span = input_span_seconds(&events);
+    let m = ProcessingMetrics::new(system.name(), events.len(), span, wall, latencies);
     eprintln!(
-        "slam-replay: ran '{}' over {} IMU samples -> {} poses ({:.0}x real-time)",
+        "slam-replay: ran '{}' over {} events ({} imu, {} scans) -> {} poses ({:.0}x real-time)",
         system.name(),
-        samples.len(),
+        events.len(),
+        imu.len(),
+        scans.len(),
         traj.len(),
         m.real_time_factor,
     );

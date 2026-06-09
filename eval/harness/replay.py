@@ -54,6 +54,10 @@ def find_bag2imu_binary(build_if_missing: bool = True) -> Path:
     return find_binary("slam-bag2imu", "SLAM_BAG2IMU_BIN", "slam-datasets", build_if_missing=build_if_missing)
 
 
+def find_bag2scan_binary(build_if_missing: bool = True) -> Path:
+    return find_binary("slam-bag2scan", "SLAM_BAG2SCAN_BIN", "slam-datasets", build_if_missing=build_if_missing)
+
+
 def run_baseline(baseline: str, imu_csv: Path, out_tum: Path, *, binary: Path | None = None) -> Path:
     """Run one baseline (`stationary` | `dead-reckoning`) and return the output path."""
     binary = binary or find_replay_binary()

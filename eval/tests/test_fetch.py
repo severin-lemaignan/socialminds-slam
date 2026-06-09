@@ -79,8 +79,10 @@ def test_gather_sequences_reuses_materialized_openloris(tmp_path, monkeypatch):
     mat.mkdir(parents=True)
     (mat / "imu.csv").write_text("1.0 0 0 0 0 0 -9.81\n2.5 0 0 0 0 0 -9.81\n")
     (mat / "groundtruth.tum").write_text("1.0 0 0 0 0 0 0 1\n")
+    (mat / "scan.csv").write_text("1.0 -1.5 0.01 0.1 25.0 1 2.0\n")
 
     seqs = benchmark.gather_sequences([], ["cafe1-1"], False, tmp_path / "work")
     assert [s.name for s in seqs] == ["cafe1-1"]
     assert seqs[0].imu_csv == mat / "imu.csv"
+    assert seqs[0].scan_csv == mat / "scan.csv"
     assert seqs[0].duration_s == pytest.approx(1.5)

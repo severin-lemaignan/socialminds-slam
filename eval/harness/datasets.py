@@ -36,6 +36,8 @@ class Sequence:
     groundtruth_tum: Path
     duration_s: float
     has_gyro: bool
+    # Planar laser scans (scan CSV), when the source records a 2D lidar (M3 front-end).
+    scan_csv: Path | None = None
 
 
 def _ns_to_seconds_str(ns: int) -> str:
@@ -296,16 +298,19 @@ def materialize_openloris(
     imu_topic: str | None = None,
     gyro_topic: str | None = None,
     accel_topic: str | None = None,
+    extract_scans: bool = True,
     bag2imu_bin: Path | None = None,
+    bag2scan_bin: Path | None = None,
 ) -> Sequence:
     """Materialise an OpenLORIS sequence from one ROS1 ``.bag`` + its ground-truth file.
 
-    The IMU stream is extracted by the Rust ``slam-bag2imu`` tool (the ``rosbag`` crate,
-    no ROS install). Real OpenLORIS bags split the IMU per RealSense convention — pass
-    ``gyro_topic`` + ``accel_topic`` (e.g. the ``OPENLORIS_*_TOPIC`` defaults) to extract
-    both and merge them; ``imu_topic`` covers single-topic bags. OpenLORIS ground truth is
-    *already* TUM-formatted (``#Time px py pz qx qy qz qw``), so it is used directly.
-    RGB-D / lidar extraction lands with their front-ends (M3+).
+    The IMU and laser-scan streams are extracted by the Rust ``slam-bag2imu`` /
+    ``slam-bag2scan`` tools (the ``rosbag`` crate, no ROS install). Real OpenLORIS bags
+    split the IMU per RealSense convention — pass ``gyro_topic`` + ``accel_topic`` (e.g.
+    the ``OPENLORIS_*_TOPIC`` defaults) to extract both and merge them; ``imu_topic``
+    covers single-topic bags. OpenLORIS ground truth is *already* TUM-formatted (``#Time
+    px py pz qx qy qz qw``), so it is used directly. RGB-D extraction lands with the
+    visual front-end.
     """
     from . import replay
 
@@ -337,6 +342,14 @@ def materialize_openloris(
     else:
         extract(imu_topic, imu_csv)
 
+    scan_csv = None
+    if extract_scans:
+        scan_bin = Path(bag2scan_bin) if bag2scan_bin else replay.find_bag2scan_binary()
+        scan_csv = workdir / "scan.csv"
+        subprocess.run(
+            [str(scan_bin), "--bag", str(bag_path), "--out", str(scan_csv)], check=True
+        )
+
     gt_tum = workdir / "groundtruth.tum"
     shutil.copyfile(groundtruth_txt, gt_tum)
 
@@ -347,6 +360,7 @@ def materialize_openloris(
         groundtruth_tum=gt_tum,
         duration_s=_imu_csv_duration(imu_csv),
         has_gyro=True,
+        scan_csv=scan_csv,
     )
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -43,10 +44,24 @@ def mean_std(values: list[float]) -> MeanStd:
 
 @dataclass(frozen=True)
 class SystemSpec:
-    """A system to benchmark: a `slam-replay` baseline name."""
+    """A system to benchmark: a `slam-replay` system name + its primary input stream."""
 
     name: str
     baseline: str
+    # Which sequence stream the system consumes: "imu" or "scan". Sequences lacking it
+    # skip the system (e.g. scan matching on the scan-less EuRoC).
+    input: str = "imu"
+
+
+def _sequence_inputs(seq: datasets.Sequence, system: SystemSpec) -> tuple[Path | None, Path | None]:
+    """(imu_csv, scan_csv) to pass for this (sequence, system), or raises if unrunnable."""
+    if system.input == "imu":
+        return seq.imu_csv, None
+    if system.input == "scan":
+        if seq.scan_csv is None:
+            raise ValueError(f"{seq.name} has no scan stream for {system.name}")
+        return None, seq.scan_csv
+    raise ValueError(f"unknown system input kind {system.input!r}")
 
 
 @dataclass(frozen=True)
@@ -76,11 +91,17 @@ def run_case(
     replay_bin = replay_bin or replay.find_replay_binary()
     init_pose = seq.groundtruth_tum if init_pose_from_groundtruth else None
 
+    imu_csv, scan_csv = _sequence_inputs(seq, system)
     ate, rpe, rtf, lat_p99, rss = [], [], [], [], []
     for i in range(repeats):
         out_tum = Path(workdir) / f"{system.name}_{seq.name}_{i}.tum"
         stats = compute.run_with_metrics(
-            replay_bin, system.baseline, seq.imu_csv, out_tum, init_pose_tum=init_pose
+            replay_bin,
+            system.baseline,
+            imu_csv,
+            out_tum,
+            scan_csv=scan_csv,
+            init_pose_tum=init_pose,
         )
         try:
             ate.append(metrics.ate(seq.groundtruth_tum, out_tum, align=align).rmse)
@@ -123,6 +144,9 @@ def run_matrix(
     results = []
     for seq in sequences:
         for system in systems:
+            if system.input == "scan" and seq.scan_csv is None:
+                print(f"skipping {system.name} on {seq.name}: no scan stream")
+                continue
             results.append(
                 run_case(
                     seq,
@@ -211,6 +235,7 @@ def default_systems() -> list[SystemSpec]:
     return [
         SystemSpec(name="stationary", baseline="stationary"),
         SystemSpec(name="imu_dead_reckoning", baseline="dead-reckoning"),
+        SystemSpec(name="scan_matching", baseline="scan-matching", input="scan"),
     ]
 
 
@@ -238,7 +263,20 @@ def gather_sequences(
         # cache, not the throwaway workdir, and reuse. Delete the dir to force re-extraction.
         cache = fetch.cache_root() / "openloris" / "_materialized" / name
         imu_csv, gt_tum = cache / "imu.csv", cache / "groundtruth.tum"
+        scan_csv = cache / "scan.csv"
         if imu_csv.exists() and gt_tum.exists():
+            if not scan_csv.exists():
+                # IMU-only cache from before the scan front-end: add the scan stream
+                # without re-paying the two IMU decompression passes.
+                print(f"extracting scans from {bag.name} (one bz2 pass)", flush=True)
+                subprocess.run(
+                    [
+                        str(replay.find_bag2scan_binary()),
+                        "--bag", str(bag),
+                        "--out", str(scan_csv),
+                    ],
+                    check=True,
+                )
             seqs.append(
                 datasets.Sequence(
                     name=name,
@@ -247,6 +285,7 @@ def gather_sequences(
                     groundtruth_tum=gt_tum,
                     duration_s=datasets._imu_csv_duration(imu_csv),
                     has_gyro=True,
+                    scan_csv=scan_csv,
                 )
             )
         else:
