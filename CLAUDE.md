@@ -52,8 +52,13 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
 
 ## Datasets & tooling
 - CI: zero-download **synthetic** generator.
-- Primary real dataset: **OpenLORIS-Scene** (the robot's twin: 2D lidar + RealSense RGB-D
-  + IMU + wheel odom, indoor/dynamic). Then **TUM RGB-D `fr3/walking_*`**, **Bonn Dynamic**.
+- **OpenLORIS-Scene** (the robot's twin) is freely hosted on **Hugging Face** as **ROS1
+  bags** (`shixuesong/openloris-scene`); read in Rust via the **`rosbag` crate** in
+  `slam-datasets` (`slam-bag2imu`) — no ROS install. Ground truth ships as TUM already.
+  **EuRoC** is the first runnable real-data IMU benchmark (small CSVs). Then **TUM RGB-D
+  `fr3/walking_*`**, **Bonn Dynamic** once the visual front-end exists.
+- Datasets are downloaded+cached via `make data-euroc|data-openloris|data-openloris-gt`
+  into `$SLAM_DATA_DIR` (default `./data`, git-ignored). Big bags never touch CI.
 - Metrics via **`evo`**; replay/regression fixtures via **MCAP** bags on the ROS side.
 
 ## Repo layout & workflow

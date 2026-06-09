@@ -73,6 +73,7 @@ intended shape:
 |---|---|---|
 | `slam-types` | time, SE(3)/SO(3), sensor samples, trajectories, TUM I/O — the zero-copy data structures | **present** |
 | `slam-baseline` | `SlamSystem` trait + trivial reference baselines (stationary, IMU dead-reckoning) | **present** |
+| `slam-datasets` | dataset ingestion: read sensor streams from ROS1 bags (`rosbag` crate) into engine types; `slam-bag2imu` | **present** |
 | `slam-replay` | CLI: drive a `SlamSystem` over a dataset, emit a TUM trajectory | **present** |
 | `slam-imu` | IMU preintegration | planned |
 | `slam-frontend-lidar` | 2D planar scan-matching | planned |
