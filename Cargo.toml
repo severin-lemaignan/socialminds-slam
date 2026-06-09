@@ -2,6 +2,8 @@
 resolver = "2"
 members = [
     "crates/slam-types",
+    "crates/slam-baseline",
+    "crates/slam-replay",
 ]
 
 [workspace.package]
@@ -23,6 +25,7 @@ clap = { version = "4", features = ["derive"] }
 
 # Internal crates
 slam-types = { path = "crates/slam-types" }
+slam-baseline = { path = "crates/slam-baseline" }
 
 [profile.release]
 lto = "thin"

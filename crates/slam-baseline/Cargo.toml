@@ -1,0 +1,16 @@
+[package]
+name = "slam-baseline"
+description = "The SlamSystem trait and trivial reference baselines (stationary, IMU dead-reckoning) used to validate the evaluation harness end-to-end. See ADR 0005."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+slam-types.workspace = true
+nalgebra.workspace = true
+
+[dev-dependencies]
+approx = "0.5"

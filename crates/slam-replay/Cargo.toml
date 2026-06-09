@@ -1,0 +1,19 @@
+[package]
+name = "slam-replay"
+description = "CLI: drive a SlamSystem over recorded sensor input and emit a TUM trajectory for evaluation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "slam-replay"
+path = "src/main.rs"
+
+[dependencies]
+slam-types.workspace = true
+slam-baseline.workspace = true
+anyhow.workspace = true
+clap.workspace = true
