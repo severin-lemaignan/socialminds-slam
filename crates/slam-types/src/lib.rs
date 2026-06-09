@@ -14,12 +14,16 @@
 
 pub mod geometry;
 pub mod imu_csv;
+pub mod scan_csv;
 pub mod sensor;
+pub mod system;
 pub mod time;
 pub mod trajectory;
 
-pub use geometry::{Pose, Rotation, Vec3};
+pub use geometry::{Pose, Rotation, Vec2, Vec3};
 pub use imu_csv::{read_imu, write_imu, ImuCsvError};
-pub use sensor::ImuSample;
+pub use scan_csv::{read_scans, write_scans, ScanCsvError};
+pub use sensor::{ImuSample, LaserScan2D};
+pub use system::SlamSystem;
 pub use time::{Duration, Stamp};
 pub use trajectory::{StampedPose, Trajectory, TumParseError};

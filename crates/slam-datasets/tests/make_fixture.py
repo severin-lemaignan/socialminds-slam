@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Generate the committed `mini.bag` fixture for slam-datasets' bag-reader tests.
 
-A tiny, uncompressed ROS1 bag with three `sensor_msgs/Imu` messages on `/d400/imu` plus a
-non-IMU topic (`/robot/info`), so the Rust tests exercise auto-topic-selection and
-type-based filtering. Re-run only when the fixture needs regenerating:
+A tiny, uncompressed ROS1 bag with three `sensor_msgs/Imu` messages on `/d400/imu`, two
+`sensor_msgs/LaserScan` messages on `/scan`, plus a non-IMU topic (`/robot/info`), so the
+Rust tests exercise auto-topic-selection and type-based filtering. Re-run only when the
+fixture needs regenerating:
 
     pip install rosbags numpy
     python crates/slam-datasets/tests/make_fixture.py
@@ -25,10 +26,21 @@ SAMPLES = [
     (1560000083, 930771360, (0.12, -0.22, 0.32), (8.12, -0.32, 4.52)),
 ]
 
+# (sec, nanosec, ranges) — asserted in the Rust test; one invalid (inf) return.
+SCANS = [
+    (1560000083, 922000000, (1.0, float("inf"), 2.5)),
+    (1560000083, 947000000, (1.1, 1.2, 2.6)),
+]
+SCAN_META = dict(
+    angle_min=-1.5, angle_max=1.5, angle_increment=1.5, time_increment=0.0001,
+    scan_time=0.025, range_min=0.1, range_max=25.0,
+)
+
 
 def main() -> None:
     ts = get_typestore(Stores.ROS1_NOETIC)
     Imu = ts.types["sensor_msgs/msg/Imu"]
+    LaserScan = ts.types["sensor_msgs/msg/LaserScan"]
     Header = ts.types["std_msgs/msg/Header"]
     Time = ts.types["builtin_interfaces/msg/Time"]
     Quaternion = ts.types["geometry_msgs/msg/Quaternion"]
@@ -55,6 +67,17 @@ def main() -> None:
                 linear_acceleration_covariance=np.zeros(9, dtype=np.float64),
             )
             writer.write(imu_conn, t_ns, ts.serialize_ros1(msg, Imu.__msgtype__))
+
+        scan_conn = writer.add_connection("/scan", LaserScan.__msgtype__, typestore=ts)
+        for sec, nsec, ranges in SCANS:
+            t_ns = sec * 1_000_000_000 + nsec
+            msg = LaserScan(
+                header=Header(seq=0, stamp=Time(sec=sec, nanosec=nsec), frame_id="laser"),
+                ranges=np.array(ranges, dtype=np.float32),
+                intensities=np.zeros(len(ranges), dtype=np.float32),
+                **SCAN_META,
+            )
+            writer.write(scan_conn, t_ns, ts.serialize_ros1(msg, LaserScan.__msgtype__))
 
         info = String(data="openloris-mini")
         writer.write(info_conn, SAMPLES[0][0] * 1_000_000_000 + SAMPLES[0][1],

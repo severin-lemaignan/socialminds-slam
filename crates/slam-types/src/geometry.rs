@@ -5,10 +5,13 @@
 //! can swap the backing representation later without touching call sites. All quantities
 //! are `f64`.
 
-use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector3};
+use nalgebra::{Isometry3, Translation3, UnitQuaternion, Vector2, Vector3};
 
 /// A 3D vector (point, velocity, angular rate, …).
 pub type Vec3 = Vector3<f64>;
+
+/// A 2D vector (planar point, e.g. a laser return).
+pub type Vec2 = Vector2<f64>;
 
 /// A 3D rotation, i.e. an element of SO(3), stored as a unit quaternion.
 #[derive(Debug, Clone, Copy, PartialEq)]

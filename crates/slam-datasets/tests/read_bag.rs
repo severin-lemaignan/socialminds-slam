@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use slam_datasets::{list_topics, read_imu_from_bag, BagError};
+use slam_datasets::{list_topics, read_imu_from_bag, read_scans_from_bag, BagError};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mini.bag")
@@ -18,6 +18,10 @@ fn lists_all_topics_with_types() {
         .collect();
     assert!(
         pairs.contains(&("/d400/imu", "sensor_msgs/Imu")),
+        "{pairs:?}"
+    );
+    assert!(
+        pairs.contains(&("/scan", "sensor_msgs/LaserScan")),
         "{pairs:?}"
     );
     assert!(
@@ -48,11 +52,37 @@ fn explicit_imu_topic_works() {
 #[test]
 fn rejects_unknown_topic() {
     let err = read_imu_from_bag(fixture(), Some("/nope")).unwrap_err();
-    assert!(matches!(err, BagError::TopicNotFound(_)));
+    assert!(matches!(err, BagError::TopicNotFound(_, _)));
 }
 
 #[test]
 fn rejects_non_imu_topic() {
     let err = read_imu_from_bag(fixture(), Some("/robot/info")).unwrap_err();
-    assert!(matches!(err, BagError::TopicNotFound(_)));
+    assert!(matches!(err, BagError::TopicNotFound(_, _)));
+}
+
+#[test]
+fn auto_selects_the_unique_scan_topic_and_decodes_scans() {
+    let scans = read_scans_from_bag(fixture(), None).unwrap();
+    assert_eq!(scans.len(), 2);
+
+    // Time-sorted; values must match the fixture generator exactly.
+    assert_eq!(scans[0].stamp.as_nanos(), 1_560_000_083_922_000_000);
+    assert_eq!(scans[0].ranges.len(), 3);
+    assert_eq!(scans[0].ranges[0], 1.0);
+    assert!(scans[0].ranges[1].is_infinite());
+    assert!((scans[0].angle_min - (-1.5)).abs() < 1e-6);
+    assert!((scans[0].angle_increment - 1.5).abs() < 1e-6);
+    assert!((scans[0].range_max - 25.0).abs() < 1e-6);
+    assert_eq!(scans[1].stamp.as_nanos(), 1_560_000_083_947_000_000);
+    assert_eq!(scans[1].ranges[2], 2.6);
+
+    // Only the valid returns become points (beam 1 of scan 0 is inf).
+    assert_eq!(scans[0].points().len(), 2);
+}
+
+#[test]
+fn scan_reader_rejects_imu_topic() {
+    let err = read_scans_from_bag(fixture(), Some("/d400/imu")).unwrap_err();
+    assert!(matches!(err, BagError::TopicNotFound(_, _)));
 }

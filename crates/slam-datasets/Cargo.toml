@@ -18,3 +18,7 @@ clap.workspace = true
 [[bin]]
 name = "slam-bag2imu"
 path = "src/bin/bag2imu.rs"
+
+[[bin]]
+name = "slam-bag2scan"
+path = "src/bin/bag2scan.rs"
