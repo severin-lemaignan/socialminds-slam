@@ -56,14 +56,23 @@ pub struct MatchResult {
     pub converged: bool,
 }
 
+/// How many grid cells subdivide the correspondence gate.
+///
+/// Cells finer than the gate matter on real indoor scans: returns bunch on nearby walls
+/// (hundreds of points per gate-sized cell), and the expanding ring search below visits
+/// the dense region in near-to-far order with early exit instead of scanning it whole.
+const CELLS_PER_GATE: i32 = 4;
+
 /// Uniform-grid 2-nearest-neighbour index over the reference points.
 ///
-/// Dense CSR layout over the reference bounding box: cell size = the correspondence
-/// gate, so the 3×3 neighbourhood of a query's cell provably contains every point within
-/// the gate. A lidar's extent is sensor-bounded (`range_max`, tens of metres) so the
-/// dense grid is a few thousand cells — lookups are plain array indexing, no hashing.
+/// Dense CSR layout over the reference bounding box, cell = gate / [`CELLS_PER_GATE`].
+/// Queries search outward ring by ring and stop as soon as no unseen cell can beat the
+/// current second-nearest (a cell at Chebyshev ring `r` holds points ≥ `(r−1)·cell`
+/// away). A lidar's extent is sensor-bounded (`range_max`), so the dense grid stays
+/// small — lookups are plain array indexing, no hashing.
 struct Grid {
     cell: f64,
+    gate2: f64,
     min_x: f64,
     min_y: f64,
     nx: i32,
@@ -74,7 +83,9 @@ struct Grid {
 }
 
 impl Grid {
-    fn build(points: &[Vec2], cell: f64) -> Grid {
+    fn build(points: &[Vec2], gate: f64) -> Grid {
+        let cell = gate / CELLS_PER_GATE as f64;
+        let gate2 = gate * gate;
         let (mut min_x, mut min_y) = (f64::INFINITY, f64::INFINITY);
         let (mut max_x, mut max_y) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
         for p in points {
@@ -86,6 +97,7 @@ impl Grid {
         if points.is_empty() {
             return Grid {
                 cell,
+                gate2,
                 min_x: 0.0,
                 min_y: 0.0,
                 nx: 0,
@@ -127,6 +139,7 @@ impl Grid {
 
         Grid {
             cell,
+            gate2,
             min_x,
             min_y,
             nx,
@@ -142,27 +155,53 @@ impl Grid {
         type Candidate = Option<(f64, u32)>;
         let kx = ((q.x - self.min_x) / self.cell).floor() as i32;
         let ky = ((q.y - self.min_y) / self.cell).floor() as i32;
-        // More than one cell outside the bounding box → nothing can be within the gate.
-        if kx < -1 || kx > self.nx || ky < -1 || ky > self.ny {
+        // Covering the gate from anywhere inside the query's cell needs this many rings.
+        let max_ring = CELLS_PER_GATE + 1;
+        if kx < -max_ring || kx > self.nx + max_ring || ky < -max_ring || ky > self.ny + max_ring {
             return None;
         }
-        let gate2 = self.cell * self.cell;
+
         let (mut best, mut second): (Candidate, Candidate) = (None, None);
-        for cx in (kx - 1).max(0)..=(kx + 1).min(self.nx - 1) {
-            for cy in (ky - 1).max(0)..=(ky + 1).min(self.ny - 1) {
-                let c = cx as usize * self.ny as usize + cy as usize;
-                let bucket = &self.items[self.starts[c] as usize..self.starts[c + 1] as usize];
-                for &i in bucket {
-                    let d2 = (points[i as usize] - q).norm_squared();
-                    if d2 > gate2 {
-                        continue;
-                    }
-                    if best.is_none_or(|(bd, _)| d2 < bd) {
-                        second = best;
-                        best = Some((d2, i));
-                    } else if second.is_none_or(|(sd, _)| d2 < sd) {
-                        second = Some((d2, i));
-                    }
+        let scan_cell = |cx: i32, cy: i32, best: &mut Candidate, second: &mut Candidate| {
+            if cx < 0 || cx >= self.nx || cy < 0 || cy >= self.ny {
+                return;
+            }
+            let c = cx as usize * self.ny as usize + cy as usize;
+            let bucket = &self.items[self.starts[c] as usize..self.starts[c + 1] as usize];
+            for &i in bucket {
+                let d2 = (points[i as usize] - q).norm_squared();
+                if d2 > self.gate2 {
+                    continue;
+                }
+                if best.is_none_or(|(bd, _)| d2 < bd) {
+                    *second = *best;
+                    *best = Some((d2, i));
+                } else if second.is_none_or(|(sd, _)| d2 < sd) {
+                    *second = Some((d2, i));
+                }
+            }
+        };
+
+        for r in 0..=max_ring {
+            if r == 0 {
+                scan_cell(kx, ky, &mut best, &mut second);
+            } else {
+                // The ring's perimeter: top + bottom rows, then the side columns.
+                for cx in kx - r..=kx + r {
+                    scan_cell(cx, ky - r, &mut best, &mut second);
+                    scan_cell(cx, ky + r, &mut best, &mut second);
+                }
+                for cy in ky - r + 1..=ky + r - 1 {
+                    scan_cell(kx - r, cy, &mut best, &mut second);
+                    scan_cell(kx + r, cy, &mut best, &mut second);
+                }
+            }
+            // Any point in ring r+1 or beyond is at least r·cell away: once the
+            // second-nearest beats that bound, farther rings cannot change the answer.
+            if let Some((sd, _)) = second {
+                let unseen_min = r as f64 * self.cell;
+                if sd <= unseen_min * unseen_min {
+                    break;
                 }
             }
         }
