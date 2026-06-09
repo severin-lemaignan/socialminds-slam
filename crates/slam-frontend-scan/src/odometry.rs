@@ -7,7 +7,7 @@
 
 use slam_types::{LaserScan2D, Pose, SlamSystem, Stamp, StampedPose, Vec2};
 
-use crate::icp::{match_scans, MatchConfig};
+use crate::icp::{MatchConfig, ScanMatcher};
 use crate::se2::Se2;
 
 /// Tuning for [`ScanOdometry`].
@@ -48,7 +48,8 @@ pub struct ScanOdometryStats {
 }
 
 struct Keyframe {
-    points: Vec<Vec2>,
+    /// The keyframe's points, indexed once for repeated matching.
+    matcher: ScanMatcher,
     /// Keyframe sensor pose in the odometry frame.
     pose: Se2,
 }
@@ -95,7 +96,7 @@ impl ScanOdometry {
 
     fn adopt_keyframe(&mut self, points: Vec<Vec2>) {
         self.keyframe = Some(Keyframe {
-            points,
+            matcher: ScanMatcher::new(points, self.cfg.matcher.clone()),
             pose: self.current,
         });
         self.stats.keyframes += 1;
@@ -125,7 +126,9 @@ impl SlamSystem for ScanOdometry {
         let predicted = self.current.compose(&self.last_motion);
         let initial = keyframe.pose.inverse().compose(&predicted);
 
-        let matched = match_scans(&keyframe.points, &points, initial, &self.cfg.matcher)
+        let matched = keyframe
+            .matcher
+            .match_to(&points, initial)
             .filter(|m| m.inlier_fraction >= self.cfg.min_inlier_fraction);
 
         let previous = self.current;

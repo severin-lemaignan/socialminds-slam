@@ -7,7 +7,7 @@
 //! - `keyframe_reuse`: 10 matches against one reference (what scan-to-keyframe pays).
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use slam_frontend_scan::{match_scans, MatchConfig, Se2};
+use slam_frontend_scan::{match_scans, MatchConfig, ScanMatcher, Se2};
 use slam_types::Vec2;
 use std::hint::black_box;
 
@@ -80,20 +80,16 @@ fn bench_match(c: &mut Criterion) {
         })
     });
 
-    // Today this pays the full reference-indexing cost 10×; the keyframe-reuse
-    // restructure should collapse it towards 10× the per-match marginal cost.
+    // The scan-to-keyframe shape: the reference is indexed once, matched ten times.
     c.bench_function("match_scans/720pts/keyframe_reuse_x10", |b| {
         b.iter(|| {
+            let matcher = ScanMatcher::new(reference.clone(), cfg.clone());
             let mut last = Se2::identity();
             for _ in 0..10 {
-                last = match_scans(
-                    black_box(&reference),
-                    black_box(&current),
-                    black_box(initial),
-                    &cfg,
-                )
-                .unwrap()
-                .transform;
+                last = matcher
+                    .match_to(black_box(&current), black_box(initial))
+                    .unwrap()
+                    .transform;
             }
             black_box(last)
         })

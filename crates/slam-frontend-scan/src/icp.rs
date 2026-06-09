@@ -118,117 +118,153 @@ struct Correspondence {
     residual: f64,
 }
 
-/// Align `current` onto `reference` starting from `initial`.
+/// A reference scan, indexed once and matched against many times.
 ///
-/// Returns `None` when there are never enough gated correspondences to solve (scan
-/// content mismatch, bad initial guess beyond the gate, or degenerate geometry where the
-/// normal equations lose rank).
-pub fn match_scans(
-    reference: &[Vec2],
-    current: &[Vec2],
-    initial: Se2,
-    cfg: &MatchConfig,
-) -> Option<MatchResult> {
-    if reference.len() < cfg.min_correspondences || current.len() < cfg.min_correspondences {
-        return None;
+/// This is the scan-to-keyframe shape (ADR 0007): one keyframe serves dozens of incoming
+/// scans, so the neighbour index is built when the keyframe is adopted — not per match.
+pub struct ScanMatcher {
+    cfg: MatchConfig,
+    reference: Vec<Vec2>,
+    grid: Grid,
+}
+
+impl ScanMatcher {
+    /// Take ownership of the reference points and index them.
+    pub fn new(reference: Vec<Vec2>, cfg: MatchConfig) -> Self {
+        let grid = Grid::build(&reference, cfg.max_correspondence_distance);
+        ScanMatcher {
+            cfg,
+            reference,
+            grid,
+        }
     }
-    let grid = Grid::build(reference, cfg.max_correspondence_distance);
 
-    let mut transform = initial;
-    let mut mean_residual = f64::INFINITY;
-    let mut inlier_fraction = 0.0;
-    let mut converged = false;
-    let mut iterations = 0;
+    pub fn reference(&self) -> &[Vec2] {
+        &self.reference
+    }
 
-    for iter in 0..cfg.max_iterations {
-        iterations = iter + 1;
+    /// Align `current` onto the reference starting from `initial`.
+    ///
+    /// Returns `None` when there are never enough gated correspondences to solve (scan
+    /// content mismatch, bad initial guess beyond the gate, or degenerate geometry where
+    /// the normal equations lose rank).
+    pub fn match_to(&self, current: &[Vec2], initial: Se2) -> Option<MatchResult> {
+        let (cfg, reference, grid) = (&self.cfg, &self.reference[..], &self.grid);
+        if reference.len() < cfg.min_correspondences || current.len() < cfg.min_correspondences {
+            return None;
+        }
 
-        // ---- Correspondences at the current estimate --------------------------------
-        let mut corr: Vec<Correspondence> = Vec::with_capacity(current.len());
-        for &p in current {
-            let q = transform.apply(p);
-            let Some((i, j, _)) = grid.two_nearest(reference, q) else {
-                continue;
-            };
-            let a = reference[i as usize];
-            // Local line through the two nearest reference points; fall back to
-            // point-to-point when they coincide (isolated return).
-            let normal = match j {
-                Some(j) => {
-                    let tangent = reference[j as usize] - a;
-                    let n = Vec2::new(-tangent.y, tangent.x);
-                    let len = n.norm();
-                    if len < 1e-9 {
+        let mut transform = initial;
+        let mut mean_residual = f64::INFINITY;
+        let mut inlier_fraction = 0.0;
+        let mut converged = false;
+        let mut iterations = 0;
+
+        for iter in 0..cfg.max_iterations {
+            iterations = iter + 1;
+
+            // ---- Correspondences at the current estimate ----------------------------
+            let mut corr: Vec<Correspondence> = Vec::with_capacity(current.len());
+            for &p in current {
+                let q = transform.apply(p);
+                let Some((i, j, _)) = grid.two_nearest(reference, q) else {
+                    continue;
+                };
+                let a = reference[i as usize];
+                // Local line through the two nearest reference points; fall back to
+                // point-to-point when they coincide (isolated return).
+                let normal = match j {
+                    Some(j) => {
+                        let tangent = reference[j as usize] - a;
+                        let n = Vec2::new(-tangent.y, tangent.x);
+                        let len = n.norm();
+                        if len < 1e-9 {
+                            let d = q - a;
+                            let dn = d.norm();
+                            if dn < 1e-12 {
+                                continue;
+                            }
+                            d / dn
+                        } else {
+                            n / len
+                        }
+                    }
+                    None => {
                         let d = q - a;
                         let dn = d.norm();
                         if dn < 1e-12 {
                             continue;
                         }
                         d / dn
-                    } else {
-                        n / len
                     }
-                }
-                None => {
-                    let d = q - a;
-                    let dn = d.norm();
-                    if dn < 1e-12 {
-                        continue;
-                    }
-                    d / dn
-                }
-            };
-            corr.push(Correspondence {
-                point: p,
-                normal,
-                residual: normal.dot(&(q - a)),
+                };
+                corr.push(Correspondence {
+                    point: p,
+                    normal,
+                    residual: normal.dot(&(q - a)),
+                });
+            }
+
+            // ---- Trim the worst residuals --------------------------------------------
+            let keep = ((corr.len() as f64) * (1.0 - cfg.trim_ratio)).floor() as usize;
+            if keep < cfg.min_correspondences {
+                return None;
+            }
+            corr.select_nth_unstable_by(keep - 1, |a, b| {
+                a.residual.abs().total_cmp(&b.residual.abs())
             });
+            corr.truncate(keep);
+
+            // ---- Gauss-Newton step on (dx, dy, dθ), left-applied ---------------------
+            let mut h = Matrix3::<f64>::zeros();
+            let mut g = Vector3::<f64>::zeros();
+            let mut abs_sum = 0.0;
+            for c in &corr {
+                let q = transform.apply(c.point);
+                // d(R(θ)p + t)/dθ at the current estimate = (−q_y, q_x) about the origin.
+                let jac =
+                    Vector3::new(c.normal.x, c.normal.y, c.normal.x * -q.y + c.normal.y * q.x);
+                h += jac * jac.transpose();
+                g += jac * c.residual;
+                abs_sum += c.residual.abs();
+            }
+            mean_residual = abs_sum / keep as f64;
+            inlier_fraction = keep as f64 / current.len() as f64;
+
+            let delta = h.cholesky().map(|ch| ch.solve(&(-g)))?;
+
+            // Left-multiply the increment (it was linearised in the reference frame).
+            transform = Se2::new(delta.x, delta.y, delta.z).compose(&transform);
+
+            if delta.x.hypot(delta.y) < cfg.translation_epsilon
+                && delta.z.abs() < cfg.rotation_epsilon
+            {
+                converged = true;
+                break;
+            }
         }
 
-        // ---- Trim the worst residuals ------------------------------------------------
-        let keep = ((corr.len() as f64) * (1.0 - cfg.trim_ratio)).floor() as usize;
-        if keep < cfg.min_correspondences {
-            return None;
-        }
-        corr.select_nth_unstable_by(keep - 1, |a, b| {
-            a.residual.abs().total_cmp(&b.residual.abs())
-        });
-        corr.truncate(keep);
-
-        // ---- Gauss-Newton step on (dx, dy, dθ), left-applied -------------------------
-        let mut h = Matrix3::<f64>::zeros();
-        let mut g = Vector3::<f64>::zeros();
-        let mut abs_sum = 0.0;
-        for c in &corr {
-            let q = transform.apply(c.point);
-            // d(R(θ)p + t)/dθ at the current estimate = (−q_y, q_x) about the origin.
-            let jac = Vector3::new(c.normal.x, c.normal.y, c.normal.x * -q.y + c.normal.y * q.x);
-            h += jac * jac.transpose();
-            g += jac * c.residual;
-            abs_sum += c.residual.abs();
-        }
-        mean_residual = abs_sum / keep as f64;
-        inlier_fraction = keep as f64 / current.len() as f64;
-
-        let delta = h.cholesky().map(|ch| ch.solve(&(-g)))?;
-
-        // Left-multiply the increment (it was linearised in the reference frame).
-        transform = Se2::new(delta.x, delta.y, delta.z).compose(&transform);
-
-        if delta.x.hypot(delta.y) < cfg.translation_epsilon && delta.z.abs() < cfg.rotation_epsilon
-        {
-            converged = true;
-            break;
-        }
+        Some(MatchResult {
+            transform,
+            iterations,
+            mean_residual,
+            inlier_fraction,
+            converged,
+        })
     }
+}
 
-    Some(MatchResult {
-        transform,
-        iterations,
-        mean_residual,
-        inlier_fraction,
-        converged,
-    })
+/// One-shot convenience over [`ScanMatcher`]: index `reference`, match once.
+///
+/// Pays the indexing cost every call — odometry-style repeated matching against the same
+/// reference should hold a [`ScanMatcher`] instead.
+pub fn match_scans(
+    reference: &[Vec2],
+    current: &[Vec2],
+    initial: Se2,
+    cfg: &MatchConfig,
+) -> Option<MatchResult> {
+    ScanMatcher::new(reference.to_vec(), cfg.clone()).match_to(current, initial)
 }
 
 #[cfg(test)]

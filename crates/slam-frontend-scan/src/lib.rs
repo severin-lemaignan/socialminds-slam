@@ -11,6 +11,6 @@ mod icp;
 mod odometry;
 mod se2;
 
-pub use icp::{match_scans, MatchConfig, MatchResult};
+pub use icp::{match_scans, MatchConfig, MatchResult, ScanMatcher};
 pub use odometry::{ScanOdometry, ScanOdometryConfig, ScanOdometryStats};
 pub use se2::Se2;
