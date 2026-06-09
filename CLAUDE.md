@@ -86,8 +86,10 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
   adds the synthetic sequence; `--init-pose-from-gt` seeds runs with the ground-truth
   initial pose. OpenLORIS split gyro/accel topics are merged by the adapter.
 - `python -m harness.score …` → score an external reference (RTAB-Map/GLIM) trajectory.
-- `slam-replay` (run a baseline; `--metrics`, `--init-pose-from-tum`); `slam-bag2imu`
-  (ROS1 bag → IMU CSV, `--list`).
+- `slam-replay` (run a system over `--imu`/`--scan`; `--metrics`, `--init-pose-from-tum`);
+  `slam-bag2imu` / `slam-bag2scan` (ROS1 bag → IMU/scan CSV, `--list`).
+- `python -m harness.viz --openloris cafe1-1` — interactive scan/trajectory debugger
+  (scans through estimated poses + ground truth; `--save` for headless PNG).
 
 ## Status
 **M0 done** (harness + trivial baselines). **M1 done**: EuRoC + OpenLORIS(IMU) adapters,
@@ -97,4 +99,6 @@ trivial baselines on MH_01_easy + cafe1-1 — the floor to beat. Remaining M1 op
 run RTAB-Map/GLIM on the robot and archive the baseline. **M2 largely done**:
 `slam-gtsam-sys` + `slam-backend` (pose graphs, IMU preintegration, instrumented LM solves,
 synthetic-graph tests green locally); awaiting first green CI with the vendored GTSAM.
+**M3 started**: 2D scan-matching front-end done (`slam-frontend-scan`, PLICP, ADR 0007) —
+**ATE 0.09 m on cafe1-1** vs 6.4 km dead-reckoning; next RGB-D-inertial, then fusion.
 See [`docs/ROADMAP.md`](docs/ROADMAP.md).

@@ -72,8 +72,21 @@ make data-openloris SCENE=office1   # OpenLORIS scene rosbags (LARGE: 6–33 GB)
 OpenLORIS bags are read with the Rust `rosbag` reader (no ROS install):
 
 ```bash
-slam-bag2imu --bag data/openloris/office1-1.bag --list           # inspect topics
+slam-bag2imu --bag data/openloris/office1-1.bag --list            # inspect topics
 slam-bag2imu --bag data/openloris/office1-1.bag --out imu.csv     # extract IMU
+slam-bag2scan --bag data/openloris/office1-1.bag --out scan.csv   # extract 2D laser scans
+```
+
+## Visual debugging
+
+`harness.viz` overlays the laser scans (rendered through the *estimated* poses — drift
+smears the walls, a good front-end draws them crisp), the estimated trajectory, and
+ground truth. Interactive: slider, ←/→ (shift: ±25), space to autoplay.
+
+```bash
+python -m harness.viz --openloris cafe1-1                 # run scan matching + show
+python -m harness.viz --scan s.csv --estimate e.tum --groundtruth g.tum
+python -m harness.viz --openloris cafe1-1 --save overview.png   # headless snapshot
 ```
 
 ## Reference baselines (the "number to beat")

@@ -57,11 +57,16 @@ arrives with the front-ends (M3).
 **Done when:** a synthetic pose graph with loop constraints optimises to the known
 ground truth within tolerance, in CI (GTSAM built CPU-only).
 
-## M3 — Front-ends: RGB-D-inertial odometry + 2D planar scan-matching
+## M3 — Front-ends: RGB-D-inertial odometry + 2D planar scan-matching — ◐ in progress
 **Goal:** our own odometry, beating dead-reckoning on real data.
 
+- ☑ 2D planar scan-matching front-end (the planar backbone): trimmed point-to-line ICP,
+  scan-to-keyframe (`slam-frontend-scan`, ADR 0007), wired through `slam-replay` and the
+  harness. **Measured on OpenLORIS cafe1-1: ATE RMSE 0.09 m** (floor baselines: 33 m
+  stationary, 6.4 km IMU dead-reckoning) at ~10× real time, single-threaded.
+- ☑ Scan extraction from ROS1 bags (`slam-bag2scan`) + scan CSV interchange + the
+  `harness.viz` scan/trajectory debugger.
 - ☐ RGB-D-inertial odometry front-end (the 3D source)
-- ☐ 2D planar scan-matching front-end (the planar backbone)
 - ☐ Fusion of both + IMU into the backend
 
 **Done when:** the combined front-end beats the IMU baseline and approaches the reference
