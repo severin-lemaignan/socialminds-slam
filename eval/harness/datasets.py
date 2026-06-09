@@ -1,0 +1,242 @@
+"""Datasets as a uniform interface.
+
+A [`Sequence`] is everything the harness needs to benchmark one run: an IMU stream and a
+ground-truth trajectory, materialised on disk in the engine's input formats (the
+`slam-replay` IMU CSV and a TUM ground-truth file). Adapters convert each source dataset
+into that shape so the rest of the harness is dataset-agnostic.
+
+Sources, by what we can run *today* (IMU-only baselines) vs. the roadmap:
+
+- `synthetic` — generated, no download, no GPU; the CI dataset.
+- `euroc` — EuRoC MAV (ETH ASL): real 200 Hz gyro+accel IMU + Vicon/Leica ground truth,
+  in small CSVs. The first *real-data* benchmark we can run with the IMU baseline.
+- `openloris`, `tum_rgbd` — the robot-relevant indoor/dynamic datasets; their adapters
+  need the RGB-D / lidar front-ends (M3+) to be meaningful, so only download helpers and
+  format notes live here for now.
+
+Frame/convention notes for EuRoC are documented in `convert_euroc`.
+"""
+
+from __future__ import annotations
+
+import csv
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class Sequence:
+    """A benchmark-ready sequence materialised on disk."""
+
+    name: str
+    source: str
+    imu_csv: Path
+    groundtruth_tum: Path
+    duration_s: float
+    has_gyro: bool
+
+
+def _ns_to_seconds_str(ns: int) -> str:
+    """Exact nanoseconds → decimal-seconds string (no float rounding).
+
+    Mirrors `slam_types::Stamp::from_seconds_str`, so high-rate stamps stay exact.
+    """
+    sign = "-" if ns < 0 else ""
+    ns = abs(ns)
+    return f"{sign}{ns // 1_000_000_000}.{ns % 1_000_000_000:09d}"
+
+
+# --------------------------------------------------------------------------------------
+# Synthetic
+# --------------------------------------------------------------------------------------
+
+def materialize_synthetic(workdir: Path, spec=None) -> Sequence:
+    """Generate the synthetic sequence into ``workdir`` (see `harness.synthetic`)."""
+    from . import synthetic
+
+    spec = spec or synthetic.TrajectorySpec()
+    samples = synthetic.generate(spec)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    imu_csv = workdir / "imu.csv"
+    gt_tum = workdir / "groundtruth.tum"
+    synthetic.write_imu_csv(samples, imu_csv)
+    synthetic.write_groundtruth_tum(samples, gt_tum)
+    return Sequence(
+        name="synthetic",
+        source="synthetic",
+        imu_csv=imu_csv,
+        groundtruth_tum=gt_tum,
+        duration_s=spec.duration_s,
+        has_gyro=True,
+    )
+
+
+# --------------------------------------------------------------------------------------
+# EuRoC MAV (ETH ASL format: a `mav0/` directory)
+# --------------------------------------------------------------------------------------
+
+# EuRoC column layouts (ASL "dataset" format). Both files are timestamped in ns.
+#   imu0/data.csv:   ts, w_x, w_y, w_z, a_x, a_y, a_z              (gyro rad/s, accel m/s^2)
+#   state_groundtruth_estimate0/data.csv:
+#                    ts, p_x, p_y, p_z, q_w, q_x, q_y, q_z, ...     (rest: v, biases)
+
+def convert_euroc(mav0_dir: Path, workdir: Path, name: str = "euroc") -> Sequence:
+    """Convert an EuRoC ``mav0/`` directory to a [`Sequence`].
+
+    Conventions: EuRoC's accelerometer reports specific force in the IMU body frame
+    (gravity included), matching our convention; the world frame is gravity-aligned (Z up),
+    matching the engine's ``g_vec = (0, 0, −g)``. Ground truth ``p_RS_R`` / ``q_RS`` is the
+    IMU body pose in the reference frame, written out in TUM order (quaternion reordered
+    ``w,x,y,z`` → ``x,y,z,w``). The IMU and ground-truth streams are sampled at different
+    rates; the metrics layer associates them by timestamp.
+    """
+    mav0_dir = Path(mav0_dir)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    imu_src = mav0_dir / "imu0" / "data.csv"
+    gt_src = mav0_dir / "state_groundtruth_estimate0" / "data.csv"
+    if not imu_src.exists():
+        raise FileNotFoundError(f"EuRoC IMU file not found: {imu_src}")
+    if not gt_src.exists():
+        raise FileNotFoundError(f"EuRoC ground-truth file not found: {gt_src}")
+
+    imu_csv = workdir / "imu.csv"
+    gt_tum = workdir / "groundtruth.tum"
+
+    first_ns: int | None = None
+    last_ns: int | None = None
+
+    with imu_src.open() as fsrc, imu_csv.open("w") as fdst:
+        fdst.write("# t gx gy gz ax ay az  (seconds, rad/s, m/s^2)  [from EuRoC imu0]\n")
+        for row in csv.reader(fsrc):
+            if not row or row[0].lstrip().startswith("#"):
+                continue
+            ns = int(row[0])
+            gx, gy, gz, ax, ay, az = (float(v) for v in row[1:7])
+            first_ns = ns if first_ns is None else first_ns
+            last_ns = ns
+            fdst.write(f"{_ns_to_seconds_str(ns)} {gx:.9f} {gy:.9f} {gz:.9f} {ax:.9f} {ay:.9f} {az:.9f}\n")
+
+    with gt_src.open() as fsrc, gt_tum.open("w") as fdst:
+        fdst.write("# timestamp tx ty tz qx qy qz qw  [from EuRoC state_groundtruth]\n")
+        for row in csv.reader(fsrc):
+            if not row or row[0].lstrip().startswith("#"):
+                continue
+            ns = int(row[0])
+            px, py, pz, qw, qx, qy, qz = (float(v) for v in row[1:8])
+            fdst.write(
+                f"{_ns_to_seconds_str(ns)} {px:.9f} {py:.9f} {pz:.9f} "
+                f"{qx:.9f} {qy:.9f} {qz:.9f} {qw:.9f}\n"
+            )
+
+    duration = 0.0 if first_ns is None or last_ns is None else (last_ns - first_ns) / 1e9
+    return Sequence(
+        name=name,
+        source="euroc",
+        imu_csv=imu_csv,
+        groundtruth_tum=gt_tum,
+        duration_s=duration,
+        has_gyro=True,
+    )
+
+
+# Base URL for the ASL "dataset" (mav0) zips, by sequence name.
+EUROC_ASL_BASE = "http://robotics.ethz.ch/~asl-datasets/ijrr_euroc_mav_dataset"
+EUROC_SEQUENCES = {
+    # name: (collection, zip stem)
+    "MH_01_easy": ("machine_hall", "MH_01_easy"),
+    "MH_02_easy": ("machine_hall", "MH_02_easy"),
+    "V1_01_easy": ("vicon_room1", "V1_01_easy"),
+    "V2_01_easy": ("vicon_room2", "V2_01_easy"),
+}
+
+
+def euroc_download_url(seq_name: str) -> str:
+    """Return the ASL download URL for an EuRoC sequence zip."""
+    if seq_name not in EUROC_SEQUENCES:
+        raise KeyError(f"unknown EuRoC sequence {seq_name!r}; known: {sorted(EUROC_SEQUENCES)}")
+    collection, stem = EUROC_SEQUENCES[seq_name]
+    return f"{EUROC_ASL_BASE}/{collection}/{stem}/{stem}.zip"
+
+
+def download_euroc(seq_name: str, dest_dir: Path) -> Path:
+    """Download + unzip an EuRoC sequence, returning its ``mav0/`` directory.
+
+    The zip is ~1–2 GB (it bundles imagery we don't use for the IMU baseline), so this is
+    an operator step, never run in CI. CI and unit tests use the committed mini fixture.
+    """
+    import urllib.request
+    import zipfile
+
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    url = euroc_download_url(seq_name)
+    zip_path = dest_dir / f"{seq_name}.zip"
+    if not zip_path.exists():
+        print(f"downloading {url} -> {zip_path}")
+        urllib.request.urlretrieve(url, zip_path)
+    extract_dir = dest_dir / seq_name
+    with zipfile.ZipFile(zip_path) as zf:
+        zf.extractall(extract_dir)
+    # The ASL zip may place mav0 at the root or one level down.
+    for candidate in (extract_dir / "mav0", *extract_dir.glob("*/mav0")):
+        if candidate.is_dir():
+            return candidate
+    raise FileNotFoundError(f"no mav0/ directory found under {extract_dir}")
+
+
+# --------------------------------------------------------------------------------------
+# Roadmap datasets (full adapters await the RGB-D / lidar front-ends, M3+)
+# --------------------------------------------------------------------------------------
+
+# TUM RGB-D dynamic sequences — the cheap dynamic-environment baseline (ADR 0005). Freely
+# downloadable; the ground-truth trajectory is a TUM file already, but the useful signal
+# (RGB-D) needs the visual front-end, so we only provide the fetch here.
+TUM_RGBD_BASE = "https://cvg.cit.tum.de/rgbd/dataset"
+TUM_RGBD_SEQUENCES = {
+    "fr3_walking_xyz": "freiburg3/rgbd_dataset_freiburg3_walking_xyz.tgz",
+    "fr3_walking_halfsphere": "freiburg3/rgbd_dataset_freiburg3_walking_halfsphere.tgz",
+    "fr3_sitting_xyz": "freiburg3/rgbd_dataset_freiburg3_sitting_xyz.tgz",
+}
+
+
+def tum_rgbd_download_url(seq_name: str) -> str:
+    if seq_name not in TUM_RGBD_SEQUENCES:
+        raise KeyError(f"unknown TUM RGB-D sequence {seq_name!r}; known: {sorted(TUM_RGBD_SEQUENCES)}")
+    return f"{TUM_RGBD_BASE}/{TUM_RGBD_SEQUENCES[seq_name]}"
+
+
+def download_tum_rgbd(seq_name: str, dest_dir: Path) -> Path:
+    """Download + extract a TUM RGB-D sequence; return its directory. Operator step."""
+    import tarfile
+    import urllib.request
+
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    url = tum_rgbd_download_url(seq_name)
+    tgz = dest_dir / f"{seq_name}.tgz"
+    if not tgz.exists():
+        print(f"downloading {url} -> {tgz}")
+        urllib.request.urlretrieve(url, tgz)
+    with tarfile.open(tgz) as tf:
+        tf.extractall(dest_dir)
+    extracted = next((p for p in dest_dir.iterdir() if p.is_dir() and p.name.startswith("rgbd_dataset")), None)
+    if extracted is None:
+        raise FileNotFoundError(f"no rgbd_dataset_* directory under {dest_dir}")
+    return extracted
+
+
+# OpenLORIS-Scene — the robot's twin (2D lidar + RealSense RGB-D + IMU + wheel odom, indoor
+# dynamic). Access is registration-gated (a form → Google Drive / Baidu), so there is no
+# auto-download: obtain it manually, then point an adapter at the extracted sequence once
+# the lidar/RGB-D front-ends exist. See ADR 0005 and docs/ROADMAP.md (M1).
+OPENLORIS_INFO_URL = "https://lifelong-robotic-vision.github.io/dataset/scene.html"
+
+
+def openloris_download(*_args, **_kwargs):
+    raise NotImplementedError(
+        "OpenLORIS-Scene access is registration-gated; download manually from "
+        f"{OPENLORIS_INFO_URL}. A full adapter lands with the RGB-D/lidar front-ends (M3+)."
+    )

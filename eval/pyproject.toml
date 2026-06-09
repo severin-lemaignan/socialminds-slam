@@ -1,0 +1,9 @@
+# Configuration for the evaluation harness tooling (Python).
+# Not a packaged distribution — just config for pytest et al.
+
+[tool.pytest.ini_options]
+# Run from eval/; put eval/ on the import path so `import harness` works, and discover
+# tests under tests/.
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
