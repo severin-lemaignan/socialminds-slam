@@ -52,16 +52,27 @@ eval/              CPU-only evaluation harness (Python): datasets, metrics, gate
 ## Quick start (CPU-only, no GPU/ROS required)
 
 ```bash
-# Build & test the engine
-cargo test --workspace
+# Build & test the engine (Rust) + harness (Python)
+make test
 
 # End-to-end harness sanity check: synthesise a trajectory, run a baseline,
-# score it with ATE/RPE — runs anywhere, no GPU, no dataset download.
-cd eval
-python3 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
-python3 -m harness.selftest
+# score it with ATE/RPE + compute metrics — runs anywhere, no GPU, no download.
+make bench           # gated self-test (what CI runs)
+
+# Full benchmark report (accuracy + compute, mean ± std) → eval/results/
+make setup           # one-time: create the Python venv
+cd eval && . .venv/bin/activate && python -m harness.benchmark
 ```
+
+Other entry points (`make help` for the full list):
+
+| Command | What it does |
+|---|---|
+| `python -m harness.benchmark [--repeats N]` | run the (sequence × system) matrix → `eval/results/{report.md,results.json}` |
+| `python -m harness.score --groundtruth … --estimate …` | score a reference system's trajectory into the report |
+| `make data-euroc SEQ=MH_01_easy` | download + cache an EuRoC sequence (real IMU + ground truth) |
+| `make data-openloris SCENE=office1` | download + cache an OpenLORIS scene (ROS1 bags; large) |
+| `slam-bag2imu --bag … --list` | inspect / extract IMU from a ROS1 bag (no ROS install) |
 
 The entire dev/test pipeline is **CPU-only and platform-independent** by design,
 so it runs unchanged on a laptop or a GPU-less CI build farm. GPU acceleration is

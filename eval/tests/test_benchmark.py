@@ -42,3 +42,22 @@ def test_matrix_and_report(tmp_path):
     json_path, md_path = benchmark.write_report(results, tmp_path / "results")
     assert json_path.exists() and md_path.exists()
     assert "ATE RMSE" in md_path.read_text()
+
+
+def test_score_external_trajectory(tmp_path):
+    """An externally-produced trajectory scores via the same accuracy path."""
+    from harness import compute
+
+    binary = _replay_or_skip()
+    seq = datasets.materialize_synthetic(tmp_path / "seq")
+    est = tmp_path / "dr.tum"
+    compute.run_with_metrics(binary, "dead-reckoning", seq.imu_csv, est)
+
+    agg = benchmark.score_trajectory(
+        seq.groundtruth_tum, est, system="ref", sequence="synthetic", align=False
+    )
+    assert agg.system == "ref"
+    assert agg.source == "reference"
+    assert agg.ate_rmse_m.mean == pytest.approx(0.0282, abs=2e-3)
+    # Compute fields are not observed for external trajectories.
+    assert agg.real_time_factor.mean != agg.real_time_factor.mean  # NaN

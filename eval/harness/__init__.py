@@ -10,7 +10,8 @@ whole accuracy pipeline runs unchanged on a laptop or a CI build farm:
 - `metrics`    — ATE / RPE via the `evo` toolkit
 - `compute`    — capture compute metrics (latency / throughput / RTF / peak RSS)
 - `benchmark`  — run the (sequence × system) matrix → mean±std JSON + Markdown report
+- `score`      — score an external reference trajectory (RTAB-Map/GLIM) into the report
 - `selftest`   — wire the above into an end-to-end, self-checking benchmark
 """
 
-__all__ = ["synthetic", "datasets", "fetch", "replay", "metrics", "compute", "benchmark"]
+__all__ = ["synthetic", "datasets", "fetch", "replay", "metrics", "compute", "benchmark", "score"]

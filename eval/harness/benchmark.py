@@ -130,6 +130,44 @@ def run_matrix(
     return results
 
 
+def score_trajectory(
+    groundtruth_tum: Path,
+    estimate_tum: Path,
+    *,
+    system: str,
+    sequence: str,
+    source: str = "reference",
+    align: bool = True,
+) -> Aggregate:
+    """Score an externally-produced TUM trajectory (accuracy only).
+
+    Used to bring a reference system's output (e.g. RTAB-Map or GLIM, run outside this
+    repo — see ``eval/reference/``) into the same report as our engine. Compute metrics are
+    left NaN since they are not observed here.
+    """
+    try:
+        ate = metrics.ate(groundtruth_tum, estimate_tum, align=align).rmse
+    except GeometryException:
+        ate = metrics.ate(groundtruth_tum, estimate_tum, align=False).rmse
+    try:
+        rpe = metrics.rpe(groundtruth_tum, estimate_tum, delta=1.0).rmse
+    except FilterException:
+        rpe = float("nan")
+
+    nan = MeanStd(float("nan"), float("nan"))
+    return Aggregate(
+        system=system,
+        sequence=sequence,
+        source=source,
+        repeats=1,
+        ate_rmse_m=MeanStd(ate, 0.0),
+        rpe_rmse_m=MeanStd(rpe, 0.0),
+        real_time_factor=nan,
+        latency_p99_us=nan,
+        peak_rss_mb=nan,
+    )
+
+
 def to_markdown(results: list[Aggregate]) -> str:
     header = (
         "| System | Sequence | ATE RMSE (m) | RPE RMSE (m) | Real-time × | "

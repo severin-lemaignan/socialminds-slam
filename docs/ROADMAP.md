@@ -22,15 +22,25 @@ and gates on ATE/RPE with no GPU and no download. Measured: stationary ATE 2.23 
 dead-reckoning 0.028 m (RPE@1m 3.8 mm) — dead-reckoning beats the floor and stays bounded.
 *(Compute metrics — latency/CPU/RAM/real-time-factor — deferred to M1 alongside real data.)*
 
-## M1 — Real datasets & reference baseline
+## M1 — Real datasets & reference baseline — ◐ largely done
 **Goal:** a "number to beat" on data that looks like the robot.
 
-- ☐ Dataset adapters: OpenLORIS-Scene (primary), TUM RGB-D `fr3/walking_*`
-- ☐ Reference baseline wired in (RTAB-Map or GLIM fed RGB-D) with archived metrics
-- ☐ Benchmark report generation (accuracy + compute) reproducible from one command
+- ☑ Dataset adapters: **EuRoC** (real IMU+GT, runnable today) and **OpenLORIS-Scene**
+  IMU path via the Rust `rosbag` reader (`slam-datasets`/`slam-bag2imu`). TUM RGB-D +
+  OpenLORIS RGB-D/lidar adapters are stubbed pending the visual/lidar front-ends (M3+).
+- ☑ Download + cache build steps (`make data-euroc|data-openloris|data-openloris-gt`).
+- ☑ Compute metrics (latency p50/p95/p99, throughput, real-time factor, peak RSS).
+- ☑ One-command benchmark report (accuracy + compute, mean±std → JSON + Markdown);
+  emitted as a CI artifact.
+- ☑ Reference-baseline **scaffolding**: external-trajectory scoring (`harness.score`),
+  a Dockerised RTAB-Map runner skeleton, and an archive format under `eval/reference/`.
+- ☐ **Actually run** RTAB-Map/GLIM on OpenLORIS and archive the numbers — an operator
+  step on a ROS/GPU machine (not CI); blocked only on hardware/time, not code.
 
-**Done when:** we can report ATE/RPE + compute for a reference system on OpenLORIS and
-TUM, reproducibly, and the trivial baselines sit below it as expected.
+**Status:** the harness can score any system (ours or a reference) on real data and
+produce a reproducible accuracy+compute report. Remaining: execute the reference system
+on the robot/workstation and commit its baseline JSON. Full RGB-D/lidar dataset use
+arrives with the front-ends (M3).
 
 ## M2 — IMU preintegration & the backend
 **Goal:** the factor graph exists and is exercised.
