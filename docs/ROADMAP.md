@@ -42,12 +42,17 @@ produce a reproducible accuracy+compute report. Remaining: execute the reference
 on the robot/workstation and commit its baseline JSON. Full RGB-D/lidar dataset use
 arrives with the front-ends (M3).
 
-## M2 — IMU preintegration & the backend
+## M2 — IMU preintegration & the backend — ◐ in progress
 **Goal:** the factor graph exists and is exercised.
 
-- ☐ `slam-gtsam-sys` (cxx shim) + safe `slam-backend` wrapper
-- ☐ IMU preintegration factors; a pose-graph optimisation path
-- ☐ Backend unit/integration tests (synthetic graphs with known solutions)
+- ☑ `slam-gtsam-sys` (cxx shim over vendored GTSAM 4.3a1, static + Boost-free — ADR 0006)
+  + safe `slam-backend` wrapper (typed keys, pose priors/betweens, LM optimisation,
+  per-solve instrumentation: initial/final error, iterations, wall time)
+- ☑ IMU preintegration factors (`ImuPreintegrator` + `ImuFactor`); pose-graph optimisation path
+- ☑ Backend unit/integration tests (square-loop pose graphs incl. loop closure on biased
+  odometry; preintegration vs. analytic motion; IMU factor recovers known motion)
+- ☐ Green CI run with GTSAM built CPU-only on the GitLab runner (config landed; first
+  pipeline pays the GTSAM compile, then it is cached)
 
 **Done when:** a synthetic pose graph with loop constraints optimises to the known
 ground truth within tolerance, in CI (GTSAM built CPU-only).

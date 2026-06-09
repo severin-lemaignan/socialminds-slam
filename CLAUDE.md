@@ -23,6 +23,9 @@ Top priority is **loop closure / global consistency**. Full requirements in
 1. **Rust core + wrapped GTSAM** optimiser via a thin `cxx`/C-ABI shim. Rust is the
    zero-copy hub to Python (`pyo3`) and C++ (`cxx`). GTSAM is the *only* mandatory C++
    dep; isolated behind `slam-backend` so it can be swapped for pure-Rust later. — ADR 0001
+   GTSAM is **vendored**: pinned shallow submodule `third_party/gtsam` (tag 4.3a1), built
+   static + Boost-free by `slam-gtsam-sys/build.rs` (needs only C++17 + CMake; first build
+   is slow, then cached; `SLAM_GTSAM_PREFIX` skips it). Clone with `--recursive`. — ADR 0006
 2. **Sensor roles:** the **3D map comes from RGB-D + IMU**; the **2D lidars are the
    planar backbone + the primary loop-closure sensor** (clean corridor geometry). Do NOT
    try to run 3D-lidar LIO (FAST-LIO2/GLIM) on the 2D scans. — ADR 0002
@@ -78,13 +81,20 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
 ## Benchmarking entrypoints
 - `make test` (Rust + pytest) · `make bench` (gated self-test) · `make help`.
 - `python -m harness.benchmark` → `eval/results/{report.md,results.json}` (ATE/RPE +
-  real-time factor / latency p99 / peak RSS, mean±std).
+  real-time factor / latency p99 / peak RSS, mean±std). `--euroc SEQ` / `--openloris SEQ`
+  (repeatable) benchmark cached real data — locate-only, never download; `--synthetic`
+  adds the synthetic sequence; `--init-pose-from-gt` seeds runs with the ground-truth
+  initial pose. OpenLORIS split gyro/accel topics are merged by the adapter.
 - `python -m harness.score …` → score an external reference (RTAB-Map/GLIM) trajectory.
 - `slam-replay` (run a baseline; `--metrics`, `--init-pose-from-tum`); `slam-bag2imu`
   (ROS1 bag → IMU CSV, `--list`).
 
 ## Status
 **M0 done** (harness + trivial baselines). **M1 done**: EuRoC + OpenLORIS(IMU) adapters,
-fetch/cache, compute metrics, one-command report, reference-baseline scoring/scaffolding.
-Remaining M1 operator step: run RTAB-Map/GLIM on the robot and archive the baseline.
-Next: **M2** (GTSAM backend + IMU preintegration). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+fetch/cache, compute metrics, one-command report (real-data flags: `--euroc`/`--openloris`),
+reference scoring. **Ground-0 baseline archived** (`eval/reference/baselines/ground0/`):
+trivial baselines on MH_01_easy + cafe1-1 — the floor to beat. Remaining M1 operator step:
+run RTAB-Map/GLIM on the robot and archive the baseline. **M2 largely done**:
+`slam-gtsam-sys` + `slam-backend` (pose graphs, IMU preintegration, instrumented LM solves,
+synthetic-graph tests green locally); awaiting first green CI with the vendored GTSAM.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md).
