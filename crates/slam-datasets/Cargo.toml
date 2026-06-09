@@ -10,9 +10,11 @@ authors.workspace = true
 
 [dependencies]
 slam-types.workspace = true
-# Chunk decompression for the in-house ROS1 bag reader (ADR 0008).
+# Chunk decompression for the in-house ROS1 bag reader (ADR 0008): chunks are
+# independent, so they decompress in parallel across cores.
 bzip2 = "0.4"
 lz4 = "1"
+rayon.workspace = true
 thiserror.workspace = true
 anyhow.workspace = true
 clap.workspace = true

@@ -258,17 +258,15 @@ def gather_sequences(
         seqs.append(datasets.convert_euroc(mav0, workdir / name, name=name))
     for name in openloris:
         bag, gt = fetch.locate_openloris(name)
-        # OpenLORIS bags are bz2-compressed inside, and the split gyro/accel topics mean
-        # *two* full decompression passes (~minutes each) — so materialise into the data
-        # cache, not the throwaway workdir, and reuse. Delete the dir to force re-extraction.
+        # Materialise into the data cache, not the throwaway workdir, and reuse across
+        # runs. Delete the dir to force re-extraction.
         cache = fetch.cache_root() / "openloris" / "_materialized" / name
         imu_csv, gt_tum = cache / "imu.csv", cache / "groundtruth.tum"
         scan_csv = cache / "scan.csv"
         if imu_csv.exists() and gt_tum.exists():
             if not scan_csv.exists():
-                # IMU-only cache from before the scan front-end: add the scan stream
-                # without re-paying the two IMU decompression passes.
-                print(f"extracting scans from {bag.name} (one bz2 pass)", flush=True)
+                # IMU-only cache from before the scan front-end: add the scan stream.
+                print(f"extracting scans from {bag.name}", flush=True)
                 subprocess.run(
                     [
                         str(replay.find_bag2scan_binary()),
@@ -289,11 +287,7 @@ def gather_sequences(
                 )
             )
         else:
-            print(
-                f"extracting IMU from {bag.name} (bz2-compressed, two passes — takes a "
-                f"few minutes; cached under {cache} afterwards)",
-                flush=True,
-            )
+            print(f"extracting sensor streams from {bag.name} into {cache}", flush=True)
             seqs.append(
                 datasets.materialize_openloris(
                     bag,

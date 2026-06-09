@@ -883,6 +883,7 @@ dependencies = [
  "bzip2",
  "clap",
  "lz4",
+ "rayon",
  "slam-types",
  "thiserror",
 ]

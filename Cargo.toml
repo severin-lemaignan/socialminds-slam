@@ -28,6 +28,8 @@ thiserror = "2"
 clap = { version = "4", features = ["derive"] }
 # FFI bridge to the wrapped C++ optimiser (ADR 0001).
 cxx = "1"
+# Data parallelism (ADR 0001 survey).
+rayon = "1"
 
 # Internal crates
 slam-types = { path = "crates/slam-types" }

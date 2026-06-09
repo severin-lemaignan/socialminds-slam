@@ -283,32 +283,62 @@ impl BagFile {
             .collect()
     }
 
-    /// Read + decompress the chunk record at `pos`, returning its payload.
-    fn read_chunk_payload(&mut self, pos: u64) -> Result<Vec<u8>, BagError> {
+    /// Read the raw (still compressed) chunk record at `pos`.
+    fn read_chunk_raw(&mut self, pos: u64) -> Result<RawChunk, BagError> {
         self.file.seek(SeekFrom::Start(pos))?;
         let (header, data) = read_record_from_file(&mut self.file)?;
         let header = HeaderMap::parse(&header)?;
         if header.op()? != OP_CHUNK {
             return Err(BagError::Format("chunk_pos does not point at a chunk"));
         }
-        let compression = header.str_field(b"compression")?;
-        let size = header.u32_field(b"size")? as usize;
-        decompress(compression, &data, size)
+        Ok(RawChunk {
+            compression: header.str_field(b"compression")?.to_string(),
+            uncompressed_size: header.u32_field(b"size")? as usize,
+            data,
+        })
     }
 
     /// Visit every message of the `wanted` connections, in file order, decompressing
-    /// only the chunks that contain them.
+    /// only the chunks that contain them — **in parallel**.
+    ///
+    /// Chunks are independent, and bzip2 decompression is the entire cost of reading a
+    /// real bag, so batches of raw chunks are read sequentially (I/O is cheap) and
+    /// decompressed across cores. The batch bounds memory; message delivery order stays
+    /// exactly file order.
     pub fn for_each_message(
         &mut self,
         wanted: &BTreeSet<u32>,
         mut visit: impl FnMut(u32, &[u8]) -> Result<(), BagError>,
     ) -> Result<(), BagError> {
-        for pos in self.select_chunks(wanted) {
-            let payload = self.read_chunk_payload(pos)?;
-            visit_chunk_messages(&payload, wanted, &mut visit)?;
+        use rayon::prelude::*;
+
+        /// ~64 chunks ≈ 50 MB compressed + 70 MB decompressed in flight on real bags —
+        /// enough to keep >16 cores busy, bounded regardless of bag size.
+        const BATCH: usize = 64;
+
+        let selected = self.select_chunks(wanted);
+        for batch in selected.chunks(BATCH) {
+            let raw: Vec<RawChunk> = batch
+                .iter()
+                .map(|&pos| self.read_chunk_raw(pos))
+                .collect::<Result<_, _>>()?;
+            let payloads: Vec<Vec<u8>> = raw
+                .into_par_iter()
+                .map(|c| decompress(&c.compression, &c.data, c.uncompressed_size))
+                .collect::<Result<_, _>>()?;
+            for payload in &payloads {
+                visit_chunk_messages(payload, wanted, &mut visit)?;
+            }
         }
         Ok(())
     }
+}
+
+/// A chunk as it sits in the file: compressed payload + how to decompress it.
+struct RawChunk {
+    compression: String,
+    uncompressed_size: usize,
+    data: Vec<u8>,
 }
 
 /// Walk the records inside a decompressed chunk payload, dispatching message data.

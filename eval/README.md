@@ -53,9 +53,9 @@ download** — fetch them first (below; OpenLORIS scene tars also need a `tar -x
 ground truth comes from `make data-openloris-gt`). OpenLORIS bags carry RealSense-style
 *split* IMU streams (gyro and accel as separate topics at different rates); the adapter
 extracts the d400's both and linearly interpolates accel onto the denser gyro timeline.
-The bags are bz2-compressed, so the first extraction takes a few minutes per bag; the
-result is cached under `$SLAM_DATA_DIR/openloris/_materialized/<seq>/` and reused (delete
-to force re-extraction). The synthetic sequence is the default when no real data is
+Extraction is one pass over the bag with parallel chunk decompression (~12 s for a
+2.4 GB bz2 bag); the result is cached under `$SLAM_DATA_DIR/openloris/_materialized/<seq>/`
+and reused (delete to force re-extraction). The synthetic sequence is the default when no real data is
 requested; `--synthetic` adds it alongside.
 
 ## Datasets — download + cache
