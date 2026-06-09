@@ -5,8 +5,6 @@
 //! system choices while keeping the same "inputs → TUM trajectory" contract the harness
 //! depends on.
 
-mod imu_csv;
-
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -62,7 +60,8 @@ fn main() -> Result<()> {
 
     let file = std::fs::File::open(&args.imu)
         .with_context(|| format!("opening IMU file {}", args.imu.display()))?;
-    let samples = imu_csv::read_imu(io::BufReader::new(file))?;
+    let samples = slam_types::read_imu(io::BufReader::new(file))
+        .with_context(|| format!("reading IMU file {}", args.imu.display()))?;
 
     let mut system: Box<dyn SlamSystem> = match args.baseline {
         Baseline::Stationary => Box::new(Stationary::new()),

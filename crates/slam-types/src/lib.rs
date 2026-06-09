@@ -13,11 +13,13 @@
 #![forbid(unsafe_code)]
 
 pub mod geometry;
+pub mod imu_csv;
 pub mod sensor;
 pub mod time;
 pub mod trajectory;
 
 pub use geometry::{Pose, Rotation, Vec3};
+pub use imu_csv::{read_imu, write_imu, ImuCsvError};
 pub use sensor::ImuSample;
 pub use time::{Duration, Stamp};
 pub use trajectory::{StampedPose, Trajectory, TumParseError};
