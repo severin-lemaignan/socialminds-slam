@@ -73,5 +73,16 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
 - **Always:** keep CI green, measure changes with the harness, give every GPU path a CPU
   fallback, write an ADR for every architectural decision.
 
+## Benchmarking entrypoints
+- `make test` (Rust + pytest) · `make bench` (gated self-test) · `make help`.
+- `python -m harness.benchmark` → `eval/results/{report.md,results.json}` (ATE/RPE +
+  real-time factor / latency p99 / peak RSS, mean±std).
+- `python -m harness.score …` → score an external reference (RTAB-Map/GLIM) trajectory.
+- `slam-replay` (run a baseline; `--metrics`, `--init-pose-from-tum`); `slam-bag2imu`
+  (ROS1 bag → IMU CSV, `--list`).
+
 ## Status
-Bootstrapping **M0** (harness + trivial baselines). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**M0 done** (harness + trivial baselines). **M1 done**: EuRoC + OpenLORIS(IMU) adapters,
+fetch/cache, compute metrics, one-command report, reference-baseline scoring/scaffolding.
+Remaining M1 operator step: run RTAB-Map/GLIM on the robot and archive the baseline.
+Next: **M2** (GTSAM backend + IMU preintegration). See [`docs/ROADMAP.md`](docs/ROADMAP.md).
