@@ -14,3 +14,8 @@ nalgebra.workspace = true
 
 [dev-dependencies]
 approx = "0.5"
+criterion = "0.5"
+
+[[bench]]
+name = "match_scans"
+harness = false
