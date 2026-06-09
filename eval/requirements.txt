@@ -1,0 +1,4 @@
+# CPU-only evaluation harness dependencies (ADR 0005).
+# Pinned loosely; CI installs these on a GPU-less runner.
+numpy>=1.24
+evo>=1.28        # ATE/RPE, trajectory alignment, TUM/KITTI/EuRoC I/O
