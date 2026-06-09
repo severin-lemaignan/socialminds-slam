@@ -16,39 +16,42 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def find_replay_binary(build_if_missing: bool = True) -> Path:
-    """Return a path to the `slam-replay` binary.
+def find_binary(name: str, env_var: str, package: str, *, build_if_missing: bool = True) -> Path:
+    """Locate a workspace binary.
 
-    Resolution order: ``SLAM_REPLAY_BIN`` env var, then a binary on ``PATH``, then the
-    Cargo target dirs (release preferred). If still missing and ``build_if_missing``, run
-    ``cargo build``.
+    Resolution order: ``$<env_var>``, then ``PATH``, then the Cargo target dirs (release
+    preferred). If still missing and ``build_if_missing``, build ``package``.
     """
-    env = os.environ.get("SLAM_REPLAY_BIN")
+    env = os.environ.get(env_var)
     if env and Path(env).exists():
         return Path(env)
 
-    on_path = shutil.which("slam-replay")
+    on_path = shutil.which(name)
     if on_path:
         return Path(on_path)
 
     for profile in ("release", "debug"):
-        candidate = REPO_ROOT / "target" / profile / "slam-replay"
+        candidate = REPO_ROOT / "target" / profile / name
         if candidate.exists():
             return candidate
 
     if build_if_missing:
-        subprocess.run(
-            ["cargo", "build", "--release", "-p", "slam-replay"],
-            cwd=REPO_ROOT,
-            check=True,
-        )
-        candidate = REPO_ROOT / "target" / "release" / "slam-replay"
+        subprocess.run(["cargo", "build", "--release", "-p", package], cwd=REPO_ROOT, check=True)
+        candidate = REPO_ROOT / "target" / "release" / name
         if candidate.exists():
             return candidate
 
     raise FileNotFoundError(
-        "slam-replay binary not found; set SLAM_REPLAY_BIN or run `cargo build -p slam-replay`."
+        f"{name} binary not found; set {env_var} or run `cargo build -p {package}`."
     )
+
+
+def find_replay_binary(build_if_missing: bool = True) -> Path:
+    return find_binary("slam-replay", "SLAM_REPLAY_BIN", "slam-replay", build_if_missing=build_if_missing)
+
+
+def find_bag2imu_binary(build_if_missing: bool = True) -> Path:
+    return find_binary("slam-bag2imu", "SLAM_BAG2IMU_BIN", "slam-datasets", build_if_missing=build_if_missing)
 
 
 def run_baseline(baseline: str, imu_csv: Path, out_tum: Path, *, binary: Path | None = None) -> Path:

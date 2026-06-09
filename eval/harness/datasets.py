@@ -20,6 +20,8 @@ Frame/convention notes for EuRoC are documented in `convert_euroc`.
 from __future__ import annotations
 
 import csv
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -188,6 +190,67 @@ def download_euroc(seq_name: str, dest_dir: Path) -> Path:
 
 
 # --------------------------------------------------------------------------------------
+# OpenLORIS-Scene (the robot's twin) — IMU path via the Rust ROS1 bag reader
+# --------------------------------------------------------------------------------------
+
+def _imu_csv_duration(imu_csv: Path) -> float:
+    """Span (seconds) between the first and last sample in an IMU CSV."""
+    first = last = None
+    with Path(imu_csv).open() as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            t = float(line.split()[0])
+            first = t if first is None else first
+            last = t
+    return 0.0 if first is None or last is None else last - first
+
+
+def materialize_openloris(
+    bag_path: Path,
+    groundtruth_txt: Path,
+    workdir: Path,
+    *,
+    name: str = "openloris",
+    imu_topic: str | None = None,
+    bag2imu_bin: Path | None = None,
+) -> Sequence:
+    """Materialise an OpenLORIS sequence from one ROS1 ``.bag`` + its ground-truth file.
+
+    The IMU stream is extracted by the Rust ``slam-bag2imu`` tool (the ``rosbag`` crate,
+    no ROS install). OpenLORIS ground truth is *already* TUM-formatted (``#Time px py pz qx
+    qy qz qw``), so it is used directly. RGB-D / lidar extraction lands with their
+    front-ends (M3+).
+    """
+    from . import replay
+
+    bag_path = Path(bag_path)
+    groundtruth_txt = Path(groundtruth_txt)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+
+    binary = Path(bag2imu_bin) if bag2imu_bin else replay.find_bag2imu_binary()
+    imu_csv = workdir / "imu.csv"
+    cmd = [str(binary), "--bag", str(bag_path), "--out", str(imu_csv)]
+    if imu_topic:
+        cmd += ["--imu-topic", imu_topic]
+    subprocess.run(cmd, check=True)
+
+    gt_tum = workdir / "groundtruth.tum"
+    shutil.copyfile(groundtruth_txt, gt_tum)
+
+    return Sequence(
+        name=name,
+        source="openloris",
+        imu_csv=imu_csv,
+        groundtruth_tum=gt_tum,
+        duration_s=_imu_csv_duration(imu_csv),
+        has_gyro=True,
+    )
+
+
+# --------------------------------------------------------------------------------------
 # Roadmap datasets (full adapters await the RGB-D / lidar front-ends, M3+)
 # --------------------------------------------------------------------------------------
 
@@ -227,16 +290,5 @@ def download_tum_rgbd(seq_name: str, dest_dir: Path) -> Path:
         raise FileNotFoundError(f"no rgbd_dataset_* directory under {dest_dir}")
     return extracted
 
-
-# OpenLORIS-Scene — the robot's twin (2D lidar + RealSense RGB-D + IMU + wheel odom, indoor
-# dynamic). Access is registration-gated (a form → Google Drive / Baidu), so there is no
-# auto-download: obtain it manually, then point an adapter at the extracted sequence once
-# the lidar/RGB-D front-ends exist. See ADR 0005 and docs/ROADMAP.md (M1).
-OPENLORIS_INFO_URL = "https://lifelong-robotic-vision.github.io/dataset/scene.html"
-
-
-def openloris_download(*_args, **_kwargs):
-    raise NotImplementedError(
-        "OpenLORIS-Scene access is registration-gated; download manually from "
-        f"{OPENLORIS_INFO_URL}. A full adapter lands with the RGB-D/lidar front-ends (M3+)."
-    )
+# OpenLORIS-Scene download lives in `harness.fetch` (it is freely hosted on Hugging Face);
+# its IMU adapter is `materialize_openloris` above.
