@@ -86,3 +86,23 @@ fn scan_reader_rejects_imu_topic() {
     let err = read_scans_from_bag(fixture(), Some("/d400/imu")).unwrap_err();
     assert!(matches!(err, BagError::TopicNotFound(_, _)));
 }
+
+#[test]
+fn one_pass_reads_imu_and_scans_together() {
+    let streams =
+        slam_datasets::read_streams_from_bag(fixture(), &["/d400/imu"], &["/scan"]).unwrap();
+    assert_eq!(streams.imu["/d400/imu"].len(), 3);
+    assert_eq!(streams.scans["/scan"].len(), 2);
+    // Same results as the single-topic readers.
+    assert_eq!(
+        streams.imu["/d400/imu"],
+        read_imu_from_bag(fixture(), None).unwrap()
+    );
+}
+
+#[test]
+fn one_pass_rejects_a_missing_topic() {
+    let err =
+        slam_datasets::read_streams_from_bag(fixture(), &["/d400/imu"], &["/nope"]).unwrap_err();
+    assert!(matches!(err, BagError::TopicNotFound(_, _)));
+}

@@ -22,3 +22,7 @@ path = "src/bin/bag2imu.rs"
 [[bin]]
 name = "slam-bag2scan"
 path = "src/bin/bag2scan.rs"
+
+[[bin]]
+name = "slam-bag2csv"
+path = "src/bin/bag2csv.rs"

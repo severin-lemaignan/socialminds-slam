@@ -24,6 +24,13 @@ def _bag2imu_or_skip() -> Path:
         pytest.skip("slam-bag2imu not built; run `cargo build -p slam-datasets`")
 
 
+def _bag2csv_or_skip() -> Path:
+    try:
+        return replay.find_bag2csv_binary(build_if_missing=False)
+    except FileNotFoundError:
+        pytest.skip("slam-bag2csv not built; run `cargo build -p slam-datasets`")
+
+
 def test_materialize_openloris(tmp_path):
     binary = _bag2imu_or_skip()
     seq = datasets.materialize_openloris(BAG, GROUNDTRUTH, tmp_path, name="mini", bag2imu_bin=binary)
@@ -44,8 +51,9 @@ def test_materialize_openloris(tmp_path):
 def test_materialize_openloris_split_imu(tmp_path):
     # Real OpenLORIS bags split gyro/accel into separate RealSense topics. The fixture
     # bag has a single full-IMU topic; using it as *both* streams exercises the
-    # extract-twice-and-merge path, and self-merging must reproduce the original samples.
-    binary = _bag2imu_or_skip()
+    # one-pass extract-and-merge path, and self-merging must reproduce the original
+    # samples.
+    binary = _bag2csv_or_skip()
     seq = datasets.materialize_openloris(
         BAG,
         GROUNDTRUTH,
@@ -53,7 +61,7 @@ def test_materialize_openloris_split_imu(tmp_path):
         name="mini",
         gyro_topic="/d400/imu",
         accel_topic="/d400/imu",
-        bag2imu_bin=binary,
+        bag2csv_bin=binary,
     )
     merged = [ln.split() for ln in seq.imu_csv.read_text().splitlines() if not ln.startswith("#")]
     single = [

@@ -91,87 +91,149 @@ pub fn list_topics<P: AsRef<Path>>(path: P) -> Result<Vec<TopicInfo>, BagError> 
         .collect())
 }
 
-/// Read every message of one topic from a ROS1 bag through `parse`.
+/// All sensor streams pulled from a bag, keyed by topic, each time-sorted.
+#[derive(Debug, Default)]
+pub struct BagStreams {
+    pub imu: BTreeMap<String, Vec<ImuSample>>,
+    pub scans: BTreeMap<String, Vec<LaserScan2D>>,
+}
+
+/// Resolve a (possibly auto-selected) topic request against the bag's connections.
 ///
-/// If `topic` is `None`, the unique topic of `msg_type` is auto-selected; an error is
-/// returned if there are zero or several. If `topic` is given, it must exist and carry
-/// `msg_type` messages.
-fn read_topic_from_bag<T, P: AsRef<Path>>(
-    path: P,
-    topic: Option<&str>,
+/// `None` auto-selects the unique topic of `msg_type`; an error if zero or several.
+fn resolve_topic(
+    conns: &BTreeMap<u32, (String, String)>,
+    requested: Option<&str>,
     msg_type: &'static str,
-    parse: impl Fn(&[u8]) -> Result<T, BagError>,
-) -> Result<Vec<T>, BagError> {
+) -> Result<String, BagError> {
+    let candidates: Vec<&str> = {
+        let mut t: Vec<&str> = conns
+            .values()
+            .filter(|(_, tp)| tp == msg_type)
+            .map(|(topic, _)| topic.as_str())
+            .collect();
+        t.sort_unstable();
+        t.dedup();
+        t
+    };
+    match requested {
+        Some(topic) if candidates.contains(&topic) => Ok(topic.to_string()),
+        Some(topic) => Err(BagError::TopicNotFound(topic.to_string(), msg_type)),
+        None => match candidates.len() {
+            0 => Err(BagError::NoTopic(msg_type)),
+            1 => Ok(candidates[0].to_string()),
+            _ => Err(BagError::AmbiguousTopic(msg_type, candidates.join(", "))),
+        },
+    }
+}
+
+/// What a connection id contributes to which output stream.
+#[derive(Clone)]
+enum Target {
+    Imu(String),
+    Scan(String),
+}
+
+/// Read several topics in **one pass** over the bag.
+///
+/// Decompression dominates extraction cost (OpenLORIS bags are bz2 inside), so the
+/// number of passes *is* the cost: extracting gyro + accel + scan together costs one
+/// decompression instead of three. Every requested topic must exist with the right
+/// message type.
+pub fn read_streams_from_bag<P: AsRef<Path>>(
+    path: P,
+    imu_topics: &[&str],
+    scan_topics: &[&str],
+) -> Result<BagStreams, BagError> {
     let bag = open(path.as_ref())?;
     let conns = connection_map(&bag)?;
 
-    // Topics that carry messages of the requested type.
-    let candidates: BTreeMap<&str, ()> = conns
-        .values()
-        .filter(|(_, tp)| tp == msg_type)
-        .map(|(topic, _)| (topic.as_str(), ()))
-        .collect();
-
-    let chosen: String = match topic {
-        Some(requested) => {
-            if candidates.contains_key(requested) {
-                requested.to_string()
-            } else {
-                return Err(BagError::TopicNotFound(requested.to_string(), msg_type));
-            }
-        }
-        None => match candidates.len() {
-            0 => return Err(BagError::NoTopic(msg_type)),
-            1 => candidates.keys().next().unwrap().to_string(),
-            _ => {
-                let names: Vec<&str> = candidates.keys().copied().collect();
-                return Err(BagError::AmbiguousTopic(msg_type, names.join(", ")));
-            }
-        },
-    };
-
-    // Connection ids mapping to the chosen topic (a topic may have several connections).
-    let target_ids: std::collections::BTreeSet<u32> = conns
+    // Validate requests and map connection ids to output streams. (A topic may be
+    // carried by several connections.)
+    let mut targets: BTreeMap<u32, Target> = BTreeMap::new();
+    let mut out = BagStreams::default();
+    for (&requested, msg_type) in imu_topics
         .iter()
-        .filter(|(_, (t, _))| *t == chosen)
-        .map(|(id, _)| *id)
-        .collect();
+        .map(|t| (t, IMU_MSG_TYPE))
+        .chain(scan_topics.iter().map(|t| (t, SCAN_MSG_TYPE)))
+    {
+        let ids: Vec<u32> = conns
+            .iter()
+            .filter(|(_, (topic, tp))| topic == requested && tp == msg_type)
+            .map(|(&id, _)| id)
+            .collect();
+        if ids.is_empty() {
+            return Err(BagError::TopicNotFound(requested.to_string(), msg_type));
+        }
+        for id in ids {
+            targets.insert(
+                id,
+                if msg_type == IMU_MSG_TYPE {
+                    out.imu.entry(requested.to_string()).or_default();
+                    Target::Imu(requested.to_string())
+                } else {
+                    out.scans.entry(requested.to_string()).or_default();
+                    Target::Scan(requested.to_string())
+                },
+            );
+        }
+    }
 
-    let mut samples = Vec::new();
     for chunk_rec in bag.chunk_records() {
         if let ChunkRecord::Chunk(chunk) = chunk_rec? {
             for msg in chunk.messages() {
                 if let MessageRecord::MessageData(data) = msg? {
-                    if target_ids.contains(&data.conn_id) {
-                        samples.push(parse(data.data)?);
+                    match targets.get(&data.conn_id) {
+                        Some(Target::Imu(topic)) => out
+                            .imu
+                            .get_mut(topic)
+                            .expect("stream pre-created")
+                            .push(parse_imu(data.data)?),
+                        Some(Target::Scan(topic)) => out
+                            .scans
+                            .get_mut(topic)
+                            .expect("stream pre-created")
+                            .push(parse_scan(data.data)?),
+                        None => {}
                     }
                 }
             }
         }
     }
-    Ok(samples)
+
+    for samples in out.imu.values_mut() {
+        samples.sort_by_key(|s| s.stamp);
+    }
+    for scans in out.scans.values_mut() {
+        scans.sort_by_key(|s| s.stamp);
+    }
+    Ok(out)
 }
 
 /// Read the IMU stream from a ROS1 bag, returning time-sorted samples.
 ///
-/// Topic selection as in [`read_topic_from_bag`].
+/// Topic selection as in [`resolve_topic`].
 pub fn read_imu_from_bag<P: AsRef<Path>>(
     path: P,
     topic: Option<&str>,
 ) -> Result<Vec<ImuSample>, BagError> {
-    let mut samples = read_topic_from_bag(path, topic, IMU_MSG_TYPE, parse_imu)?;
-    samples.sort_by_key(|s| s.stamp);
-    Ok(samples)
+    let bag = open(path.as_ref())?;
+    let chosen = resolve_topic(&connection_map(&bag)?, topic, IMU_MSG_TYPE)?;
+    drop(bag);
+    let mut streams = read_streams_from_bag(path, &[&chosen], &[])?;
+    Ok(streams.imu.remove(&chosen).unwrap_or_default())
 }
 
 /// Read a planar laser-scan stream from a ROS1 bag, returning time-sorted scans.
 ///
-/// Topic selection as in [`read_topic_from_bag`].
+/// Topic selection as in [`resolve_topic`].
 pub fn read_scans_from_bag<P: AsRef<Path>>(
     path: P,
     topic: Option<&str>,
 ) -> Result<Vec<LaserScan2D>, BagError> {
-    let mut scans = read_topic_from_bag(path, topic, SCAN_MSG_TYPE, parse_scan)?;
-    scans.sort_by_key(|s| s.stamp);
-    Ok(scans)
+    let bag = open(path.as_ref())?;
+    let chosen = resolve_topic(&connection_map(&bag)?, topic, SCAN_MSG_TYPE)?;
+    drop(bag);
+    let mut streams = read_streams_from_bag(path, &[], &[&chosen])?;
+    Ok(streams.scans.remove(&chosen).unwrap_or_default())
 }

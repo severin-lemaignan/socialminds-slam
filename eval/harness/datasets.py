@@ -299,18 +299,20 @@ def materialize_openloris(
     gyro_topic: str | None = None,
     accel_topic: str | None = None,
     extract_scans: bool = True,
+    scan_topic: str = "/scan",
     bag2imu_bin: Path | None = None,
-    bag2scan_bin: Path | None = None,
+    bag2csv_bin: Path | None = None,
 ) -> Sequence:
     """Materialise an OpenLORIS sequence from one ROS1 ``.bag`` + its ground-truth file.
 
-    The IMU and laser-scan streams are extracted by the Rust ``slam-bag2imu`` /
-    ``slam-bag2scan`` tools (the ``rosbag`` crate, no ROS install). Real OpenLORIS bags
-    split the IMU per RealSense convention — pass ``gyro_topic`` + ``accel_topic`` (e.g.
-    the ``OPENLORIS_*_TOPIC`` defaults) to extract both and merge them; ``imu_topic``
-    covers single-topic bags. OpenLORIS ground truth is *already* TUM-formatted (``#Time
-    px py pz qx qy qz qw``), so it is used directly. RGB-D extraction lands with the
-    visual front-end.
+    Sensor streams are extracted by the Rust bag tools (no ROS install) — in **one
+    decompression pass** (``slam-bag2csv``) when the topics are explicit, since
+    decompressing the bz2 bag dominates the cost. Real OpenLORIS bags split the IMU per
+    RealSense convention — pass ``gyro_topic`` + ``accel_topic`` (e.g. the
+    ``OPENLORIS_*_TOPIC`` defaults) to extract both and merge them; ``imu_topic`` covers
+    single-topic bags (auto-selected when ``None``, via ``slam-bag2imu``). OpenLORIS
+    ground truth is *already* TUM-formatted, so it is used directly. RGB-D extraction
+    lands with the visual front-end.
     """
     from . import replay
 
@@ -324,31 +326,41 @@ def materialize_openloris(
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 
-    binary = Path(bag2imu_bin) if bag2imu_bin else replay.find_bag2imu_binary()
     imu_csv = workdir / "imu.csv"
-
-    def extract(topic: str | None, out: Path) -> None:
-        cmd = [str(binary), "--bag", str(bag_path), "--out", str(out)]
-        if topic:
-            cmd += ["--imu-topic", topic]
-        subprocess.run(cmd, check=True)
+    scan_csv = workdir / "scan.csv" if extract_scans else None
 
     if gyro_topic and accel_topic:
+        # The real OpenLORIS path: everything in one pass.
         gyro_csv = workdir / "gyro.csv"
         accel_csv = workdir / "accel.csv"
-        extract(gyro_topic, gyro_csv)
-        extract(accel_topic, accel_csv)
+        binary = Path(bag2csv_bin) if bag2csv_bin else replay.find_bag2csv_binary()
+        cmd = [
+            str(binary),
+            "--bag", str(bag_path),
+            "--imu", f"{gyro_topic}={gyro_csv}",
+            "--imu", f"{accel_topic}={accel_csv}",
+        ]
+        if scan_csv is not None:
+            cmd += ["--scan", f"{scan_topic}={scan_csv}"]
+        subprocess.run(cmd, check=True)
         merge_split_imu(gyro_csv, accel_csv, imu_csv)
     else:
-        extract(imu_topic, imu_csv)
-
-    scan_csv = None
-    if extract_scans:
-        scan_bin = Path(bag2scan_bin) if bag2scan_bin else replay.find_bag2scan_binary()
-        scan_csv = workdir / "scan.csv"
-        subprocess.run(
-            [str(scan_bin), "--bag", str(bag_path), "--out", str(scan_csv)], check=True
-        )
+        # Single/auto IMU topic (fixtures, non-RealSense bags): per-stream tools.
+        binary = Path(bag2imu_bin) if bag2imu_bin else replay.find_bag2imu_binary()
+        cmd = [str(binary), "--bag", str(bag_path), "--out", str(imu_csv)]
+        if imu_topic:
+            cmd += ["--imu-topic", imu_topic]
+        subprocess.run(cmd, check=True)
+        if scan_csv is not None:
+            subprocess.run(
+                [
+                    str(replay.find_bag2scan_binary()),
+                    "--bag", str(bag_path),
+                    "--scan-topic", scan_topic,
+                    "--out", str(scan_csv),
+                ],
+                check=True,
+            )
 
     gt_tum = workdir / "groundtruth.tum"
     shutil.copyfile(groundtruth_txt, gt_tum)
