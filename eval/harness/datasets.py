@@ -240,6 +240,53 @@ def _imu_csv_duration(imu_csv: Path) -> float:
     return 0.0 if first is None or last is None else last - first
 
 
+# OpenLORIS bags carry RealSense-style *split* IMU streams: gyro and accel arrive as
+# separate sensor_msgs/Imu topics at different rates, per device. We use the d400 (the
+# RGB-D camera, the robot-relevant device); its gyro is the denser stream, so it is the
+# merge time base.
+OPENLORIS_GYRO_TOPIC = "/d400/gyro/sample"
+OPENLORIS_ACCEL_TOPIC = "/d400/accel/sample"
+
+
+def _parse_imu_rows(path: Path) -> list[list[str]]:
+    """IMU CSV → raw column strings (timestamps must survive a merge bit-exact)."""
+    rows = []
+    with Path(path).open() as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            rows.append(line.split())
+    return rows
+
+
+def merge_split_imu(gyro_csv: Path, accel_csv: Path, out_csv: Path) -> None:
+    """Merge RealSense-style split IMU streams into one 6-axis IMU CSV.
+
+    Gyro samples are the time base; accel is linearly interpolated at each gyro
+    timestamp. Gyro samples outside the accel time span are dropped (no extrapolation).
+    The gyro columns (timestamp included) pass through verbatim, keeping stamps exact.
+    """
+    gyro = _parse_imu_rows(gyro_csv)
+    accel = [[float(v) for v in row] for row in _parse_imu_rows(accel_csv)]
+    if not gyro or not accel:
+        raise ValueError(f"empty IMU stream: gyro={len(gyro)} accel={len(accel)} samples")
+
+    i = 0
+    with Path(out_csv).open("w") as f:
+        f.write("# t gx gy gz ax ay az  (seconds, rad/s, m/s^2)  [merged split IMU]\n")
+        for row in gyro:
+            t = float(row[0])
+            if t < accel[0][0] or t > accel[-1][0]:
+                continue
+            while i + 1 < len(accel) and accel[i + 1][0] < t:
+                i += 1
+            a0, a1 = accel[i], accel[min(i + 1, len(accel) - 1)]
+            w = 0.0 if a1[0] == a0[0] else (t - a0[0]) / (a1[0] - a0[0])
+            ax, ay, az = (a0[k] + w * (a1[k] - a0[k]) for k in (4, 5, 6))
+            f.write(f"{row[0]} {row[1]} {row[2]} {row[3]} {ax:.9f} {ay:.9f} {az:.9f}\n")
+
+
 def materialize_openloris(
     bag_path: Path,
     groundtruth_txt: Path,
@@ -247,16 +294,25 @@ def materialize_openloris(
     *,
     name: str = "openloris",
     imu_topic: str | None = None,
+    gyro_topic: str | None = None,
+    accel_topic: str | None = None,
     bag2imu_bin: Path | None = None,
 ) -> Sequence:
     """Materialise an OpenLORIS sequence from one ROS1 ``.bag`` + its ground-truth file.
 
     The IMU stream is extracted by the Rust ``slam-bag2imu`` tool (the ``rosbag`` crate,
-    no ROS install). OpenLORIS ground truth is *already* TUM-formatted (``#Time px py pz qx
-    qy qz qw``), so it is used directly. RGB-D / lidar extraction lands with their
-    front-ends (M3+).
+    no ROS install). Real OpenLORIS bags split the IMU per RealSense convention — pass
+    ``gyro_topic`` + ``accel_topic`` (e.g. the ``OPENLORIS_*_TOPIC`` defaults) to extract
+    both and merge them; ``imu_topic`` covers single-topic bags. OpenLORIS ground truth is
+    *already* TUM-formatted (``#Time px py pz qx qy qz qw``), so it is used directly.
+    RGB-D / lidar extraction lands with their front-ends (M3+).
     """
     from . import replay
+
+    if (gyro_topic is None) != (accel_topic is None):
+        raise ValueError("pass both gyro_topic and accel_topic, or neither")
+    if imu_topic and gyro_topic:
+        raise ValueError("imu_topic and gyro_topic/accel_topic are mutually exclusive")
 
     bag_path = Path(bag_path)
     groundtruth_txt = Path(groundtruth_txt)
@@ -265,10 +321,21 @@ def materialize_openloris(
 
     binary = Path(bag2imu_bin) if bag2imu_bin else replay.find_bag2imu_binary()
     imu_csv = workdir / "imu.csv"
-    cmd = [str(binary), "--bag", str(bag_path), "--out", str(imu_csv)]
-    if imu_topic:
-        cmd += ["--imu-topic", imu_topic]
-    subprocess.run(cmd, check=True)
+
+    def extract(topic: str | None, out: Path) -> None:
+        cmd = [str(binary), "--bag", str(bag_path), "--out", str(out)]
+        if topic:
+            cmd += ["--imu-topic", topic]
+        subprocess.run(cmd, check=True)
+
+    if gyro_topic and accel_topic:
+        gyro_csv = workdir / "gyro.csv"
+        accel_csv = workdir / "accel.csv"
+        extract(gyro_topic, gyro_csv)
+        extract(accel_topic, accel_csv)
+        merge_split_imu(gyro_csv, accel_csv, imu_csv)
+    else:
+        extract(imu_topic, imu_csv)
 
     gt_tum = workdir / "groundtruth.tum"
     shutil.copyfile(groundtruth_txt, gt_tum)

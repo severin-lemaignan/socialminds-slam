@@ -40,10 +40,23 @@ is what CI runs.
 ```bash
 python -m harness.benchmark                 # synthetic matrix → eval/results/{report.md,results.json}
 python -m harness.benchmark --repeats 5      # N repeats → mean ± std
+python -m harness.benchmark --euroc MH_01_easy --euroc MH_02_easy   # cached real data
+python -m harness.benchmark --openloris cafe1-1 --synthetic         # mix sources freely
+python -m harness.benchmark --euroc MH_01_easy --init-pose-from-gt  # gravity-align dead-reckoning
 ```
 
 Reports ATE/RPE, real-time factor, latency p99, and peak RSS per (sequence × system). CI
 emits the report as an artifact.
+
+`--euroc` / `--openloris` pick sequences up from the `$SLAM_DATA_DIR` cache and **never
+download** — fetch them first (below; OpenLORIS scene tars also need a `tar -xf`, and
+ground truth comes from `make data-openloris-gt`). OpenLORIS bags carry RealSense-style
+*split* IMU streams (gyro and accel as separate topics at different rates); the adapter
+extracts the d400's both and linearly interpolates accel onto the denser gyro timeline.
+The bags are bz2-compressed, so the first extraction takes a few minutes per bag; the
+result is cached under `$SLAM_DATA_DIR/openloris/_materialized/<seq>/` and reused (delete
+to force re-extraction). The synthetic sequence is the default when no real data is
+requested; `--synthetic` adds it alongside.
 
 ## Datasets — download + cache
 

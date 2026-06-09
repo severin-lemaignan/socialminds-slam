@@ -117,6 +117,7 @@ def run_matrix(
     workdir: Path,
     repeats: int = 3,
     align: bool = True,
+    init_pose_from_groundtruth: bool = False,
 ) -> list[Aggregate]:
     replay_bin = replay.find_replay_binary()
     results = []
@@ -124,7 +125,13 @@ def run_matrix(
         for system in systems:
             results.append(
                 run_case(
-                    seq, system, workdir=workdir, repeats=repeats, align=align, replay_bin=replay_bin
+                    seq,
+                    system,
+                    workdir=workdir,
+                    repeats=repeats,
+                    align=align,
+                    init_pose_from_groundtruth=init_pose_from_groundtruth,
+                    replay_bin=replay_bin,
                 )
             )
     return results
@@ -207,6 +214,60 @@ def default_systems() -> list[SystemSpec]:
     ]
 
 
+def gather_sequences(
+    euroc: list[str], openloris: list[str], synthetic: bool, workdir: Path
+) -> list[datasets.Sequence]:
+    """Materialise the requested sequences under ``workdir``.
+
+    Real datasets are picked up from the `harness.fetch` cache (never downloaded here);
+    the synthetic sequence is included when asked for — or as the default when nothing
+    real is requested, which keeps the bare `python -m harness.benchmark` download-free.
+    """
+    from . import fetch
+
+    seqs = []
+    if synthetic or not (euroc or openloris):
+        seqs.append(datasets.materialize_synthetic(workdir / "synthetic"))
+    for name in euroc:
+        mav0 = fetch.locate_euroc(name)
+        seqs.append(datasets.convert_euroc(mav0, workdir / name, name=name))
+    for name in openloris:
+        bag, gt = fetch.locate_openloris(name)
+        # OpenLORIS bags are bz2-compressed inside, and the split gyro/accel topics mean
+        # *two* full decompression passes (~minutes each) — so materialise into the data
+        # cache, not the throwaway workdir, and reuse. Delete the dir to force re-extraction.
+        cache = fetch.cache_root() / "openloris" / "_materialized" / name
+        imu_csv, gt_tum = cache / "imu.csv", cache / "groundtruth.tum"
+        if imu_csv.exists() and gt_tum.exists():
+            seqs.append(
+                datasets.Sequence(
+                    name=name,
+                    source="openloris",
+                    imu_csv=imu_csv,
+                    groundtruth_tum=gt_tum,
+                    duration_s=datasets._imu_csv_duration(imu_csv),
+                    has_gyro=True,
+                )
+            )
+        else:
+            print(
+                f"extracting IMU from {bag.name} (bz2-compressed, two passes — takes a "
+                f"few minutes; cached under {cache} afterwards)",
+                flush=True,
+            )
+            seqs.append(
+                datasets.materialize_openloris(
+                    bag,
+                    gt,
+                    cache,
+                    name=name,
+                    gyro_topic=datasets.OPENLORIS_GYRO_TOPIC,
+                    accel_topic=datasets.OPENLORIS_ACCEL_TOPIC,
+                )
+            )
+    return seqs
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import tempfile
@@ -219,12 +280,42 @@ def main(argv: list[str] | None = None) -> int:
         default=Path(__file__).resolve().parents[1] / "results",
         help="where to write results.json + report.md (default eval/results)",
     )
+    p.add_argument(
+        "--euroc",
+        action="append",
+        default=[],
+        metavar="SEQ",
+        help=f"add a cached EuRoC sequence, e.g. MH_01_easy (one of {sorted(datasets.EUROC_SEQUENCES)}); repeatable",
+    )
+    p.add_argument(
+        "--openloris",
+        action="append",
+        default=[],
+        metavar="SEQ",
+        help="add a cached OpenLORIS sequence, e.g. cafe1-1 (bag + ground truth under $SLAM_DATA_DIR); repeatable",
+    )
+    p.add_argument(
+        "--synthetic",
+        action="store_true",
+        help="include the synthetic sequence alongside real ones (it is the default when none are requested)",
+    )
+    p.add_argument(
+        "--init-pose-from-gt",
+        action="store_true",
+        help="seed each run with the ground-truth initial pose (gravity-aligns dead-reckoning on real data)",
+    )
     args = p.parse_args(argv)
 
     with tempfile.TemporaryDirectory(prefix="slam-bench-") as tmp:
         tmp = Path(tmp)
-        seq = datasets.materialize_synthetic(tmp / "synthetic")
-        results = run_matrix([seq], default_systems(), workdir=tmp, repeats=args.repeats)
+        seqs = gather_sequences(args.euroc, args.openloris, args.synthetic, tmp)
+        results = run_matrix(
+            seqs,
+            default_systems(),
+            workdir=tmp,
+            repeats=args.repeats,
+            init_pose_from_groundtruth=args.init_pose_from_gt,
+        )
 
     json_path, md_path = write_report(results, args.out_dir)
     print(to_markdown(results))

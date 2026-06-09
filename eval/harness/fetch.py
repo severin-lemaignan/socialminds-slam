@@ -126,6 +126,53 @@ def fetch_openloris_groundtruth(*, root: Path | None = None) -> Path:
     return out_dir
 
 
+# --------------------------------------------------------------------------------------
+# Cache locators (never download) — used by `harness.benchmark` to pick up fetched data
+# --------------------------------------------------------------------------------------
+
+def locate_euroc(seq_name: str, *, root: Path | None = None) -> Path:
+    """Locate a *cached* EuRoC sequence's ``mav0/``; never starts a download.
+
+    A benchmark run must not silently kick off a multi-GB fetch, so this refuses unless
+    the collection zip is already cached; extraction (cheap, local) is reused from
+    `fetch_euroc`, whose download step is a no-op once the ``.done`` marker exists.
+    """
+    root = root or cache_root()
+    collection = datasets.euroc_collection(seq_name)
+    zip_path = root / "euroc" / f"{collection}.zip"
+    done = zip_path.with_suffix(zip_path.suffix + ".done")
+    if not (done.exists() and zip_path.exists()):
+        raise FileNotFoundError(
+            f"EuRoC collection {collection!r} is not cached under {root / 'euroc'}; "
+            f"run `make data-euroc SEQ={seq_name}` first."
+        )
+    return fetch_euroc(seq_name, root=root)
+
+
+def locate_openloris(seq_name: str, *, root: Path | None = None) -> tuple[Path, Path]:
+    """Locate a cached OpenLORIS sequence: its ``.bag`` and its per-sequence ground truth.
+
+    Scene tars are downloaded by `fetch_openloris_scene` but extracting them is an
+    operator step (`tar -xf`), so the bag is searched for anywhere under the OpenLORIS
+    cache. Ground truth comes from the `fetch_openloris_groundtruth` bundle.
+    """
+    root = root or cache_root()
+    ol_dir = root / "openloris"
+    bags = sorted(ol_dir.rglob(f"{seq_name}.bag")) if ol_dir.is_dir() else []
+    if not bags:
+        scene = seq_name.split("-")[0]
+        raise FileNotFoundError(
+            f"no {seq_name}.bag under {ol_dir}; run `make data-openloris SCENE={scene}` "
+            f"and extract the downloaded tar(s)."
+        )
+    gt = ol_dir / "groundtruth" / "per-sequence" / seq_name / "groundtruth.txt"
+    if not gt.exists():
+        raise FileNotFoundError(
+            f"no ground truth for {seq_name!r} at {gt}; run `make data-openloris-gt`."
+        )
+    return bags[0], gt
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
