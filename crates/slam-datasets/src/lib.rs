@@ -1,25 +1,28 @@
 //! Dataset ingestion for the SLAM engine.
 //!
 //! Reads sensor streams from recorded logs into engine types. The first source is the
-//! **ROS1 bag** (used by OpenLORIS-Scene), read via the `rosbag` crate with no ROS install
-//! required. Extracted so far: IMU (`sensor_msgs/Imu`) and planar laser scans
-//! (`sensor_msgs/LaserScan`); RGB-D extraction lands with the visual front-end.
+//! **ROS1 bag** (used by OpenLORIS-Scene), read by our own indexed reader ([`bag`],
+//! ADR 0008) with no ROS install required. Extracted so far: IMU (`sensor_msgs/Imu`)
+//! and planar laser scans (`sensor_msgs/LaserScan`); RGB-D extraction lands with the
+//! visual front-end.
 //!
 //! Design: the engine consumes the simple [`slam_types`] formats, so this crate's job is
-//! purely *log format → engine types*. The `slam-bag2imu` / `slam-bag2scan` binaries
-//! expose [`read_imu_from_bag`] / [`read_scans_from_bag`] for the evaluation harness.
+//! purely *log format → engine types*. The `slam-bag2csv` (multi-topic, one pass) and
+//! `slam-bag2imu` / `slam-bag2scan` binaries expose the readers for the evaluation
+//! harness.
 
 #![forbid(unsafe_code)]
 
+pub mod bag;
 mod imu_msg;
 mod scan_msg;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use rosbag::{ChunkRecord, IndexRecord, MessageRecord, RosBag};
 use slam_types::{ImuSample, LaserScan2D};
 
+use bag::BagFile;
 pub use imu_msg::parse_imu;
 pub use scan_msg::parse_scan;
 
@@ -36,8 +39,12 @@ pub enum BagError {
         path: String,
         source: std::io::Error,
     },
-    #[error("parsing bag: {0}")]
-    Bag(#[from] rosbag::Error),
+    #[error("I/O reading bag: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("malformed bag: {0}")]
+    Format(&'static str),
+    #[error("decompressing chunk: {0}")]
+    Decompress(String),
     #[error("malformed sensor_msgs/Imu message: {0}")]
     ImuDecode(&'static str),
     #[error("malformed sensor_msgs/LaserScan message: {0}")]
@@ -57,30 +64,20 @@ pub struct TopicInfo {
     pub message_type: String,
 }
 
-fn open(path: &Path) -> Result<RosBag, BagError> {
-    RosBag::new(path).map_err(|source| BagError::Open {
-        path: path.display().to_string(),
-        source,
-    })
-}
-
-/// Map connection id → (topic, message type), from the bag's index section.
-fn connection_map(bag: &RosBag) -> Result<BTreeMap<u32, (String, String)>, BagError> {
-    let mut map = BTreeMap::new();
-    for rec in bag.index_records() {
-        if let IndexRecord::Connection(conn) = rec? {
-            map.insert(conn.id, (conn.topic.to_string(), conn.tp.to_string()));
-        }
-    }
-    Ok(map)
+/// Map connection id → (topic, message type), from the bag's index.
+fn connection_map(bag: &BagFile) -> BTreeMap<u32, (String, String)> {
+    bag.connections()
+        .iter()
+        .map(|c| (c.id, (c.topic.clone(), c.message_type.clone())))
+        .collect()
 }
 
 /// List the topics (and message types) present in a bag.
 pub fn list_topics<P: AsRef<Path>>(path: P) -> Result<Vec<TopicInfo>, BagError> {
-    let bag = open(path.as_ref())?;
+    let bag = BagFile::open(path)?;
     let mut topics: BTreeMap<String, String> = BTreeMap::new();
-    for (_, (topic, tp)) in connection_map(&bag)? {
-        topics.insert(topic, tp);
+    for c in bag.connections() {
+        topics.insert(c.topic.clone(), c.message_type.clone());
     }
     Ok(topics
         .into_iter()
@@ -136,17 +133,17 @@ enum Target {
 
 /// Read several topics in **one pass** over the bag.
 ///
-/// Decompression dominates extraction cost (OpenLORIS bags are bz2 inside), so the
-/// number of passes *is* the cost: extracting gyro + accel + scan together costs one
-/// decompression instead of three. Every requested topic must exist with the right
-/// message type.
+/// Decompression dominates extraction cost (OpenLORIS bags are bz2 inside), and the
+/// reader is index-driven (ADR 0008): only chunks containing at least one requested
+/// connection are decompressed, so the cost is proportional to the requested data, not
+/// the bag size. Every requested topic must exist with the right message type.
 pub fn read_streams_from_bag<P: AsRef<Path>>(
     path: P,
     imu_topics: &[&str],
     scan_topics: &[&str],
 ) -> Result<BagStreams, BagError> {
-    let bag = open(path.as_ref())?;
-    let conns = connection_map(&bag)?;
+    let mut bag = BagFile::open(path)?;
+    let conns = connection_map(&bag);
 
     // Validate requests and map connection ids to output streams. (A topic may be
     // carried by several connections.)
@@ -179,27 +176,23 @@ pub fn read_streams_from_bag<P: AsRef<Path>>(
         }
     }
 
-    for chunk_rec in bag.chunk_records() {
-        if let ChunkRecord::Chunk(chunk) = chunk_rec? {
-            for msg in chunk.messages() {
-                if let MessageRecord::MessageData(data) = msg? {
-                    match targets.get(&data.conn_id) {
-                        Some(Target::Imu(topic)) => out
-                            .imu
-                            .get_mut(topic)
-                            .expect("stream pre-created")
-                            .push(parse_imu(data.data)?),
-                        Some(Target::Scan(topic)) => out
-                            .scans
-                            .get_mut(topic)
-                            .expect("stream pre-created")
-                            .push(parse_scan(data.data)?),
-                        None => {}
-                    }
-                }
-            }
+    let wanted: BTreeSet<u32> = targets.keys().copied().collect();
+    bag.for_each_message(&wanted, |conn, data| {
+        match targets.get(&conn) {
+            Some(Target::Imu(topic)) => out
+                .imu
+                .get_mut(topic)
+                .expect("stream pre-created")
+                .push(parse_imu(data)?),
+            Some(Target::Scan(topic)) => out
+                .scans
+                .get_mut(topic)
+                .expect("stream pre-created")
+                .push(parse_scan(data)?),
+            None => {}
         }
-    }
+        Ok(())
+    })?;
 
     for samples in out.imu.values_mut() {
         samples.sort_by_key(|s| s.stamp);
@@ -217,9 +210,7 @@ pub fn read_imu_from_bag<P: AsRef<Path>>(
     path: P,
     topic: Option<&str>,
 ) -> Result<Vec<ImuSample>, BagError> {
-    let bag = open(path.as_ref())?;
-    let chosen = resolve_topic(&connection_map(&bag)?, topic, IMU_MSG_TYPE)?;
-    drop(bag);
+    let chosen = resolve_topic(&connection_map(&BagFile::open(&path)?), topic, IMU_MSG_TYPE)?;
     let mut streams = read_streams_from_bag(path, &[&chosen], &[])?;
     Ok(streams.imu.remove(&chosen).unwrap_or_default())
 }
@@ -231,9 +222,11 @@ pub fn read_scans_from_bag<P: AsRef<Path>>(
     path: P,
     topic: Option<&str>,
 ) -> Result<Vec<LaserScan2D>, BagError> {
-    let bag = open(path.as_ref())?;
-    let chosen = resolve_topic(&connection_map(&bag)?, topic, SCAN_MSG_TYPE)?;
-    drop(bag);
+    let chosen = resolve_topic(
+        &connection_map(&BagFile::open(&path)?),
+        topic,
+        SCAN_MSG_TYPE,
+    )?;
     let mut streams = read_streams_from_bag(path, &[], &[&chosen])?;
     Ok(streams.scans.remove(&chosen).unwrap_or_default())
 }

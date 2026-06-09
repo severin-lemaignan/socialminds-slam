@@ -10,7 +10,9 @@ authors.workspace = true
 
 [dependencies]
 slam-types.workspace = true
-rosbag = "0.6"
+# Chunk decompression for the in-house ROS1 bag reader (ADR 0008).
+bzip2 = "0.4"
+lz4 = "1"
 thiserror.workspace = true
 anyhow.workspace = true
 clap.workspace = true

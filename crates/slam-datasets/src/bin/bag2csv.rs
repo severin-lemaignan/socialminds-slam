@@ -67,8 +67,8 @@ fn main() -> Result<()> {
 
     for (topic, path) in &imu {
         let samples = &streams.imu[*topic];
-        let file = std::fs::File::create(path)
-            .with_context(|| format!("creating {}", path.display()))?;
+        let file =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         slam_types::write_imu(samples, std::io::BufWriter::new(file))?;
         eprintln!(
             "slam-bag2csv: {} -> {} ({} samples)",
@@ -79,8 +79,8 @@ fn main() -> Result<()> {
     }
     for (topic, path) in &scan {
         let scans = &streams.scans[*topic];
-        let file = std::fs::File::create(path)
-            .with_context(|| format!("creating {}", path.display()))?;
+        let file =
+            std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         slam_types::write_scans(scans, std::io::BufWriter::new(file))?;
         eprintln!(
             "slam-bag2csv: {} -> {} ({} scans)",
