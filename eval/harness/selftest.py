@@ -1,12 +1,12 @@
 """End-to-end harness self-test / smoke benchmark.
 
-Generates a synthetic sequence, runs the trivial baselines through the Rust engine, scores
-them with ATE/RPE, and **gates** on the expected ordering. This is the M0 acceptance
+Generates a synthetic sequence, runs the trivial baselines through the Rust engine via the
+benchmark machinery, and **gates** on the expected ordering. This is the M0/M1 acceptance
 check (ADR 0005) and the job CI runs:
 
-- the pipeline (generate → engine → TUM → evo) works end to end, GPU-free;
+- the pipeline (generate → engine → TUM → evo + compute metrics) works end to end, GPU-free;
 - ``dead-reckoning`` beats ``stationary`` on a moving sequence;
-- ``dead-reckoning`` drift stays within an absolute bound.
+- ``dead-reckoning`` drift stays within an absolute bound and runs faster than real time.
 
 Run: ``python -m harness.selftest`` (from ``eval/``).
 """
@@ -19,7 +19,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import metrics, replay, synthetic
+from . import benchmark, datasets, replay
 
 
 @dataclass(frozen=True)
@@ -28,57 +28,55 @@ class Gates:
     stationary_ate_min: float = 0.5
     # ...dead-reckoning must beat it by a clear margin...
     dr_beats_stationary_ratio: float = 0.5
-    # ...and its absolute drift must stay bounded. Observed ~0.03 m on this sequence;
-    # 0.10 leaves headroom for cross-platform float variance while catching regressions.
+    # ...its absolute drift must stay bounded (observed ~0.03 m; headroom for float variance)...
     dr_ate_max: float = 0.10
-
-
-def _fmt(stats: metrics.ErrorStats) -> str:
-    return f"rmse={stats.rmse:.4f}  mean={stats.mean:.4f}  max={stats.max:.4f}"
+    # ...and it must run faster than real time.
+    dr_min_real_time_factor: float = 1.0
 
 
 def run(workdir: Path, gates: Gates = Gates()) -> bool:
+    workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
 
-    # 1. Synthesize a known sequence (no download, no GPU).
-    spec = synthetic.TrajectorySpec()
-    samples = synthetic.generate(spec)
-    imu_csv = workdir / "imu.csv"
-    gt_tum = workdir / "groundtruth.tum"
-    synthetic.write_imu_csv(samples, imu_csv)
-    synthetic.write_groundtruth_tum(samples, gt_tum)
+    seq = datasets.materialize_synthetic(workdir / "synthetic")
+    replay_bin = replay.find_replay_binary()
 
-    # 2. Run both baselines through the engine.
-    binary = replay.find_replay_binary()
-    stationary_tum = replay.run_baseline("stationary", imu_csv, workdir / "stationary.tum", binary=binary)
-    dr_tum = replay.run_baseline("dead-reckoning", imu_csv, workdir / "dead_reckoning.tum", binary=binary)
+    # align=False: both baselines start at the origin identity, so unaligned ATE is the
+    # honest global error here (and keeps the gate thresholds meaningful).
+    common = dict(workdir=workdir, repeats=1, align=False, replay_bin=replay_bin)
+    stat = benchmark.run_case(seq, benchmark.SystemSpec("stationary", "stationary"), **common)
+    dr = benchmark.run_case(
+        seq, benchmark.SystemSpec("imu_dead_reckoning", "dead-reckoning"), **common
+    )
 
-    # 3. Score (ATE unaligned — both start at the origin identity, so it is meaningful).
-    stat_ate = metrics.ate(gt_tum, stationary_tum, align=False)
-    dr_ate = metrics.ate(gt_tum, dr_tum, align=False)
-    dr_rpe = metrics.rpe(gt_tum, dr_tum, delta=1.0)
+    print(f"sequence: {seq.duration_s:.0f} s synthetic, {seq.source}")
+    print(f"  stationary      ATE rmse: {stat.ate_rmse_m.mean:.4f}")
+    print(f"  dead-reckoning  ATE rmse: {dr.ate_rmse_m.mean:.4f}  RPE: {dr.rpe_rmse_m.mean:.4f}")
+    print(
+        f"  dead-reckoning  compute: {dr.real_time_factor.mean:.0f}x real-time, "
+        f"p99 {dr.latency_p99_us.mean:.2f} us, peak {dr.peak_rss_mb.mean:.1f} MB"
+    )
 
-    print(f"sequence: {spec.duration_s:.0f} s @ {spec.rate_hz:.0f} Hz, {len(samples)} samples")
-    print(f"  stationary       ATE: {_fmt(stat_ate)}")
-    print(f"  dead-reckoning   ATE: {_fmt(dr_ate)}")
-    print(f"  dead-reckoning   RPE(1m): {_fmt(dr_rpe)}")
-
-    # 4. Gate.
     checks = [
         (
             "stationary is far off on a moving sequence",
-            stat_ate.rmse >= gates.stationary_ate_min,
-            f"{stat_ate.rmse:.4f} >= {gates.stationary_ate_min}",
+            stat.ate_rmse_m.mean >= gates.stationary_ate_min,
+            f"{stat.ate_rmse_m.mean:.4f} >= {gates.stationary_ate_min}",
         ),
         (
             "dead-reckoning beats stationary",
-            dr_ate.rmse <= gates.dr_beats_stationary_ratio * stat_ate.rmse,
-            f"{dr_ate.rmse:.4f} <= {gates.dr_beats_stationary_ratio} * {stat_ate.rmse:.4f}",
+            dr.ate_rmse_m.mean <= gates.dr_beats_stationary_ratio * stat.ate_rmse_m.mean,
+            f"{dr.ate_rmse_m.mean:.4f} <= {gates.dr_beats_stationary_ratio} * {stat.ate_rmse_m.mean:.4f}",
         ),
         (
             "dead-reckoning drift bounded",
-            dr_ate.rmse <= gates.dr_ate_max,
-            f"{dr_ate.rmse:.4f} <= {gates.dr_ate_max}",
+            dr.ate_rmse_m.mean <= gates.dr_ate_max,
+            f"{dr.ate_rmse_m.mean:.4f} <= {gates.dr_ate_max}",
+        ),
+        (
+            "dead-reckoning runs in real time",
+            dr.real_time_factor.mean >= gates.dr_min_real_time_factor,
+            f"{dr.real_time_factor.mean:.1f} >= {gates.dr_min_real_time_factor}",
         ),
     ]
     ok = True
@@ -99,8 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.keep:
-        workdir = Path(__file__).resolve().parents[1] / "_run"
-        ok = run(workdir)
+        ok = run(Path(__file__).resolve().parents[1] / "_run")
     else:
         with tempfile.TemporaryDirectory(prefix="slam-selftest-") as tmp:
             ok = run(Path(tmp))

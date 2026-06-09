@@ -9,7 +9,8 @@ whole accuracy pipeline runs unchanged on a laptop or a CI build farm:
 - `replay`     — drive the Rust engine (`slam-replay`) over recorded input
 - `metrics`    — ATE / RPE via the `evo` toolkit
 - `compute`    — capture compute metrics (latency / throughput / RTF / peak RSS)
+- `benchmark`  — run the (sequence × system) matrix → mean±std JSON + Markdown report
 - `selftest`   — wire the above into an end-to-end, self-checking benchmark
 """
 
-__all__ = ["synthetic", "datasets", "fetch", "replay", "metrics", "compute"]
+__all__ = ["synthetic", "datasets", "fetch", "replay", "metrics", "compute", "benchmark"]

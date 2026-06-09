@@ -47,3 +47,10 @@ eval:benchmark:
     - export SLAM_BAG2IMU_BIN="$CI_PROJECT_DIR/target/release/slam-bag2imu"
     - cd eval && python -m pytest
     - python -m harness.selftest
+    - python -m harness.benchmark --out-dir results
+  artifacts:
+    when: always
+    paths:
+      - eval/results/report.md
+      - eval/results/results.json
+    expire_in: 30 days
