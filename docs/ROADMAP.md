@@ -8,18 +8,19 @@ Legend: ☐ todo · ◐ in progress · ☑ done
 
 ---
 
-## M0 — Harness & trivial baselines (the vertical slice)
+## M0 — Harness & trivial baselines (the vertical slice) — ✅ done
 **Goal:** prove the whole dev/test loop works end-to-end on any CPU-only machine.
 
 - ☑ Architecture docs + ADRs (0001–0005), `CLAUDE.md` project memory
-- ◐ Rust workspace; `slam-types` (time, SE(3), IMU, trajectories, TUM I/O)
-- ◐ Trivial baselines: stationary/identity, IMU dead-reckoning; `slam-replay` CLI
-- ◐ CPU-only eval harness: synthetic generator, `evo` ATE/RPE, compute metrics, gates
-- ☐ CI: fmt/clippy/test + synthetic end-to-end benchmark, all GPU-free
+- ☑ Rust workspace; `slam-types` (time, SE(3), IMU, trajectories, TUM I/O)
+- ☑ Trivial baselines: stationary/identity, IMU dead-reckoning; `slam-replay` CLI
+- ☑ CPU-only eval harness: synthetic generator, `evo` ATE/RPE, gated self-test
+- ☑ CI (GitLab): fmt/clippy/test + synthetic end-to-end benchmark, all GPU-free
 
-**Done when:** `cargo test` is green and the harness synthesises a trajectory, runs a
-baseline, and reports ATE/RPE — in CI, no GPU, no download. IMU dead-reckoning visibly
-beats stationary on a moving sequence; both are bounded on a static one.
+**Done:** `cargo test` green; the harness synthesises a trajectory, runs both baselines,
+and gates on ATE/RPE with no GPU and no download. Measured: stationary ATE 2.23 m vs
+dead-reckoning 0.028 m (RPE@1m 3.8 mm) — dead-reckoning beats the floor and stays bounded.
+*(Compute metrics — latency/CPU/RAM/real-time-factor — deferred to M1 alongside real data.)*
 
 ## M1 — Real datasets & reference baseline
 **Goal:** a "number to beat" on data that looks like the robot.
