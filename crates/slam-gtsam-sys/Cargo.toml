@@ -1,0 +1,17 @@
+[package]
+name = "slam-gtsam-sys"
+description = "Thin cxx shim over the vendored GTSAM optimiser (ADR 0001). Unsafe surface lives here; use slam-backend."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+links = "gtsam"
+
+[dependencies]
+cxx.workspace = true
+
+[build-dependencies]
+cxx-build = "1"
+cmake = "0.1"

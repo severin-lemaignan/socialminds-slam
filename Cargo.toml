@@ -5,6 +5,8 @@ members = [
     "crates/slam-baseline",
     "crates/slam-datasets",
     "crates/slam-replay",
+    "crates/slam-gtsam-sys",
+    "crates/slam-backend",
 ]
 
 [workspace.package]
@@ -23,10 +25,14 @@ nalgebra = "0.33"
 anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive"] }
+# FFI bridge to the wrapped C++ optimiser (ADR 0001).
+cxx = "1"
 
 # Internal crates
 slam-types = { path = "crates/slam-types" }
 slam-baseline = { path = "crates/slam-baseline" }
+slam-gtsam-sys = { path = "crates/slam-gtsam-sys" }
+slam-backend = { path = "crates/slam-backend" }
 
 [profile.release]
 lto = "thin"

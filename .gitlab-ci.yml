@@ -12,6 +12,10 @@ variables:
   # Keep Cargo's caches inside the project so GitLab can cache them between runs.
   CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
   RUSTFLAGS: "-D warnings"
+  # GTSAM is vendored as a pinned shallow submodule (third_party/gtsam, ADR 0001) and
+  # built CPU-only by slam-gtsam-sys's build script; the target/ cache keeps it warm.
+  GIT_SUBMODULE_STRATEGY: recursive
+  GIT_SUBMODULE_DEPTH: 1
 
 default:
   image: rust:1.94-bookworm
@@ -23,9 +27,12 @@ default:
       - target/
 
 # Rust: formatting, lints (warnings are errors), and the full test suite.
+# cmake builds the vendored GTSAM (first run ~tens of minutes on a shared runner;
+# cached in target/ afterwards).
 rust:checks:
   stage: test
   script:
+    - apt-get update && apt-get install -y --no-install-recommends cmake
     - rustup component add rustfmt clippy
     - cargo fmt --all --check
     - cargo clippy --workspace --all-targets -- -D warnings
