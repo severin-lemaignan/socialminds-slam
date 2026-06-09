@@ -1,0 +1,158 @@
+[
+  {
+    "system": "stationary",
+    "sequence": "synthetic",
+    "source": "synthetic",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 2.2250967710329426,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": NaN,
+      "std": NaN
+    },
+    "real_time_factor": {
+      "mean": 66375.76166666667,
+      "std": 3702.017734486274
+    },
+    "latency_p99_us": {
+      "mean": 0.021,
+      "std": 0.0
+    },
+    "peak_rss_mb": {
+      "mean": 3.2200520833333335,
+      "std": 0.23037677661037992
+    }
+  },
+  {
+    "system": "imu_dead_reckoning",
+    "sequence": "synthetic",
+    "source": "synthetic",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 0.014289033465350038,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 0.0038430735919200865,
+      "std": 0.0
+    },
+    "real_time_factor": {
+      "mean": 56789.468666666675,
+      "std": 8743.046463282553
+    },
+    "latency_p99_us": {
+      "mean": 0.04733333333333334,
+      "std": 0.010402991022884823
+    },
+    "peak_rss_mb": {
+      "mean": 3.69921875,
+      "std": 0.00318943976924893
+    }
+  },
+  {
+    "system": "stationary",
+    "sequence": "MH_01_easy",
+    "source": "euroc",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 5.539017029958193,
+      "std": 8.881784197001252e-16
+    },
+    "rpe_rmse_m": {
+      "mean": NaN,
+      "std": NaN
+    },
+    "real_time_factor": {
+      "mean": 113977.806,
+      "std": 6426.434342032811
+    },
+    "latency_p99_us": {
+      "mean": 0.014666666666666666,
+      "std": 0.0009428090415820634
+    },
+    "peak_rss_mb": {
+      "mean": 7.234375,
+      "std": 0.048264981752215205
+    }
+  },
+  {
+    "system": "imu_dead_reckoning",
+    "sequence": "MH_01_easy",
+    "source": "euroc",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 69360.38102052803,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 7.306007035252979,
+      "std": 8.881784197001252e-16
+    },
+    "real_time_factor": {
+      "mean": 64757.543666666665,
+      "std": 4190.084294429911
+    },
+    "latency_p99_us": {
+      "mean": 0.055,
+      "std": 0.01772004514666935
+    },
+    "peak_rss_mb": {
+      "mean": 7.51953125,
+      "std": 0.11640362832618234
+    }
+  },
+  {
+    "system": "stationary",
+    "sequence": "cafe1-1",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 33.267752808153276,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": NaN,
+      "std": NaN
+    },
+    "real_time_factor": {
+      "mean": 50095.77066666667,
+      "std": 5944.319641442034
+    },
+    "latency_p99_us": {
+      "mean": 0.02033333333333333,
+      "std": 0.008259674462242577
+    },
+    "peak_rss_mb": {
+      "mean": 5.6171875,
+      "std": 0.027621358640099514
+    }
+  },
+  {
+    "system": "imu_dead_reckoning",
+    "sequence": "cafe1-1",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 6419.405046417749,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 11.159329214415152,
+      "std": 0.0
+    },
+    "real_time_factor": {
+      "mean": 33764.669,
+      "std": 2460.2788503388533
+    },
+    "latency_p99_us": {
+      "mean": 0.054333333333333324,
+      "std": 0.014613540144521982
+    },
+    "peak_rss_mb": {
+      "mean": 5.837239583333333,
+      "std": 0.012075024082676697
+    }
+  }
+]
