@@ -72,6 +72,9 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
 - **OpenLORIS-Scene** (the robot's twin) is freely hosted on **Hugging Face** as **ROS1
   bags** (`shixuesong/openloris-scene`); read in Rust via the **`rosbag` crate** in
   `slam-datasets` (`slam-bag2imu`) — no ROS install. Ground truth ships as TUM already.
+  **Caveat:** the `market` scenes were recorded on a different robot (Scrubber 75) and
+  their bags carry **no 2D laser topic** — RGB-D/VIO + wheel `/odom` only; the harness
+  probes the bag index and scan systems skip those sequences cleanly.
   **EuRoC** (the first runnable real-data IMU benchmark) is now hosted on the **ETH
   Research Collection**, downloaded as one zip **per collection** (e.g. `machine_hall.zip`
   bundles MH_01..05) by bitstream UUID. Then **TUM RGB-D `fr3/walking_*`**, **Bonn

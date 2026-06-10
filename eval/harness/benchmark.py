@@ -281,6 +281,22 @@ def gather_sequences(
         seqs.append(datasets.convert_euroc(mav0, workdir / name, name=name))
     for name in openloris:
         bag, gt = fetch.locate_openloris(name)
+        # Not every OpenLORIS scene has a 2D laser: the `market` bags (Scrubber 75
+        # robot) are RGB-D/VIO-only. A complete CSV cache answers without touching the
+        # (multi-GB) bag; otherwise probe its index once. Scan systems skip cleanly.
+        cache = fetch.cache_root() / "openloris" / "_materialized" / name
+        imu_csv, gt_tum = cache / "imu.csv", cache / "groundtruth.tum"
+        scan_csv = cache / "scan.csv"
+        if not direct_bag and imu_csv.exists() and gt_tum.exists() and scan_csv.exists():
+            has_scan = True
+        else:
+            has_scan = datasets.OPENLORIS_SCAN_TOPIC in datasets.bag_topics(bag)
+            if not has_scan:
+                print(
+                    f"{name}: no {datasets.OPENLORIS_SCAN_TOPIC} topic (RGB-D/VIO-only "
+                    "bag); scan systems will be skipped",
+                    flush=True,
+                )
         if direct_bag:
             seqs.append(
                 datasets.Sequence(
@@ -293,17 +309,14 @@ def gather_sequences(
                     bag=bag,
                     bag_gyro_topic=datasets.OPENLORIS_GYRO_TOPIC,
                     bag_accel_topic=datasets.OPENLORIS_ACCEL_TOPIC,
-                    bag_scan_topic=datasets.OPENLORIS_SCAN_TOPIC,
+                    bag_scan_topic=datasets.OPENLORIS_SCAN_TOPIC if has_scan else None,
                 )
             )
             continue
         # Materialise into the data cache, not the throwaway workdir, and reuse across
         # runs. Delete the dir to force re-extraction.
-        cache = fetch.cache_root() / "openloris" / "_materialized" / name
-        imu_csv, gt_tum = cache / "imu.csv", cache / "groundtruth.tum"
-        scan_csv = cache / "scan.csv"
         if imu_csv.exists() and gt_tum.exists():
-            if not scan_csv.exists():
+            if has_scan and not scan_csv.exists():
                 # IMU-only cache from before the scan front-end: add the scan stream.
                 print(f"extracting scans from {bag.name}", flush=True)
                 subprocess.run(
@@ -322,7 +335,7 @@ def gather_sequences(
                     groundtruth_tum=gt_tum,
                     duration_s=datasets._imu_csv_duration(imu_csv),
                     has_gyro=True,
-                    scan_csv=scan_csv,
+                    scan_csv=scan_csv if has_scan else None,
                 )
             )
         else:
@@ -335,6 +348,7 @@ def gather_sequences(
                     name=name,
                     gyro_topic=datasets.OPENLORIS_GYRO_TOPIC,
                     accel_topic=datasets.OPENLORIS_ACCEL_TOPIC,
+                    extract_scans=has_scan,
                 )
             )
     return seqs

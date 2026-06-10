@@ -258,6 +258,27 @@ OPENLORIS_ACCEL_TOPIC = "/d400/accel/sample"
 OPENLORIS_SCAN_TOPIC = "/scan"
 
 
+def bag_topics(bag_path: Path) -> dict[str, str]:
+    """Probe a ROS1 bag's topics (name -> message type) via the index — cheap, no
+    decompression. Lets adapters cope with sequences that lack a stream: the OpenLORIS
+    ``market`` bags (the Scrubber 75 robot) carry **no 2D laser scan topic** — they are
+    RGB-D/VIO sequences with wheel odometry."""
+    from . import replay
+
+    out = subprocess.run(
+        [str(replay.find_bag2imu_binary()), "--bag", str(bag_path), "--list"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    topics = {}
+    for line in out.stdout.splitlines():
+        if "\t" in line:
+            topic, msg_type = line.split("\t", 1)
+            topics[topic.strip()] = msg_type.strip()
+    return topics
+
+
 def _tum_duration(tum_path: Path) -> float:
     """Span (seconds) between the first and last pose of a TUM trajectory file."""
     # Same line shape as an IMU CSV (timestamp first), so the parser is shared.
