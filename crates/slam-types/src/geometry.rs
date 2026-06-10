@@ -43,6 +43,19 @@ impl Rotation {
         [q.i, q.j, q.k, q.w]
     }
 
+    /// From fixed-axis roll-pitch-yaw (the URDF/ROS `rpy` convention):
+    /// `R = Rz(yaw)·Ry(pitch)·Rx(roll)`.
+    #[inline]
+    pub fn from_rpy(roll: f64, pitch: f64, yaw: f64) -> Self {
+        Rotation(UnitQuaternion::from_euler_angles(roll, pitch, yaw))
+    }
+
+    /// To fixed-axis roll-pitch-yaw (inverse of [`from_rpy`](Self::from_rpy)).
+    #[inline]
+    pub fn to_rpy(self) -> (f64, f64, f64) {
+        self.0.euler_angles()
+    }
+
     /// Exponential map: a rotation vector (axis × angle, radians) → SO(3).
     #[inline]
     pub fn exp(omega: Vec3) -> Self {

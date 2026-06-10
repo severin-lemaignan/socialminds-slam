@@ -93,6 +93,9 @@ pub fn list_topics<P: AsRef<Path>>(path: P) -> Result<Vec<TopicInfo>, BagError> 
 pub struct BagStreams {
     pub imu: BTreeMap<String, Vec<ImuSample>>,
     pub scans: BTreeMap<String, Vec<LaserScan2D>>,
+    /// `header.frame_id` of each scan topic (first message wins) — the URDF link name
+    /// to resolve against the rig (ADR 0009).
+    pub scan_frames: BTreeMap<String, String>,
 }
 
 /// Resolve a (possibly auto-selected) topic request against the bag's connections.
@@ -184,11 +187,14 @@ pub fn read_streams_from_bag<P: AsRef<Path>>(
                 .get_mut(topic)
                 .expect("stream pre-created")
                 .push(parse_imu(data)?),
-            Some(Target::Scan(topic)) => out
-                .scans
-                .get_mut(topic)
-                .expect("stream pre-created")
-                .push(parse_scan(data)?),
+            Some(Target::Scan(topic)) => {
+                let (scan, frame_id) = parse_scan(data)?;
+                out.scans
+                    .get_mut(topic)
+                    .expect("stream pre-created")
+                    .push(scan);
+                out.scan_frames.entry(topic.clone()).or_insert(frame_id);
+            }
             None => {}
         }
         Ok(())

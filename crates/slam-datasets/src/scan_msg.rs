@@ -48,10 +48,6 @@ impl<'a> LeCursor<'a> {
         Ok(slice)
     }
 
-    fn skip(&mut self, n: usize) -> Result<(), BagError> {
-        self.take(n).map(|_| ())
-    }
-
     fn u32(&mut self) -> Result<u32, BagError> {
         let b = self.take(4)?;
         Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -63,8 +59,12 @@ impl<'a> LeCursor<'a> {
     }
 }
 
-/// Decode one `sensor_msgs/LaserScan` message body into a [`LaserScan2D`].
-pub fn parse_scan(data: &[u8]) -> Result<LaserScan2D, BagError> {
+/// Decode one `sensor_msgs/LaserScan` message body into a [`LaserScan2D`] plus the
+/// header's `frame_id` (the URDF link name the beams are expressed in, ADR 0009).
+///
+/// The returned scan's `frame` is [`slam_types::FrameId::BASE`]; resolving the string
+/// against a rig and re-tagging is the caller's job (the reader has no rig).
+pub fn parse_scan(data: &[u8]) -> Result<(LaserScan2D, String), BagError> {
     let mut c = LeCursor::new(data);
 
     // std_msgs/Header
@@ -72,7 +72,7 @@ pub fn parse_scan(data: &[u8]) -> Result<LaserScan2D, BagError> {
     let secs = c.u32()?;
     let nsecs = c.u32()?;
     let frame_id_len = c.u32()? as usize;
-    c.skip(frame_id_len)?;
+    let frame_id = String::from_utf8_lossy(c.take(frame_id_len)?).into_owned();
 
     let angle_min = c.f32()? as f64;
     let _angle_max = c.f32()?;
@@ -94,14 +94,18 @@ pub fn parse_scan(data: &[u8]) -> Result<LaserScan2D, BagError> {
     // trailing intensities are not needed.
 
     let stamp = Stamp::from_nanos(secs as i64 * 1_000_000_000 + nsecs as i64);
-    Ok(LaserScan2D {
-        stamp,
-        angle_min,
-        angle_increment,
-        range_min,
-        range_max,
-        ranges,
-    })
+    Ok((
+        LaserScan2D {
+            stamp,
+            frame: slam_types::FrameId::BASE,
+            angle_min,
+            angle_increment,
+            range_min,
+            range_max,
+            ranges,
+        },
+        frame_id,
+    ))
 }
 
 #[cfg(test)]
@@ -130,7 +134,8 @@ mod tests {
     #[test]
     fn decodes_a_well_formed_message() {
         let body = encode_scan(1560000084, 5, "laser", &[1.0, f32::INFINITY, 2.5]);
-        let s = parse_scan(&body).unwrap();
+        let (s, frame_id) = parse_scan(&body).unwrap();
+        assert_eq!(frame_id, "laser");
         assert_eq!(s.stamp.as_nanos(), 1_560_000_084_000_000_005);
         assert_eq!(s.ranges.len(), 3);
         assert!(s.ranges[1].is_infinite());

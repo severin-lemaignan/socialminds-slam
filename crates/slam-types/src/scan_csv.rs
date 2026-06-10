@@ -14,7 +14,7 @@
 
 use std::io::{self, BufRead, Write};
 
-use crate::sensor::LaserScan2D;
+use crate::sensor::{FrameId, LaserScan2D};
 use crate::time::Stamp;
 
 /// Errors from parsing a scan CSV stream.
@@ -90,6 +90,7 @@ pub fn read_scans<R: BufRead>(reader: R) -> Result<Vec<LaserScan2D>, ScanCsvErro
         }
         out.push(LaserScan2D {
             stamp,
+            frame: FrameId::BASE,
             angle_min,
             angle_increment,
             range_min,
@@ -132,6 +133,7 @@ mod tests {
     fn scan(stamp_s: f64, ranges: Vec<f32>) -> LaserScan2D {
         LaserScan2D {
             stamp: Stamp::from_seconds(stamp_s),
+            frame: FrameId::BASE,
             angle_min: -1.5,
             angle_increment: 0.01,
             range_min: 0.1,

@@ -7,6 +7,19 @@
 use crate::geometry::{Vec2, Vec3};
 use crate::time::Stamp;
 
+/// Identifies the sensor frame a measurement is expressed in.
+///
+/// An index into the rig's frame table: `slam-rig` resolves `header.frame_id` strings
+/// against the robot's URDF and hands out these ids (ADR 0009). [`FrameId::BASE`] is
+/// the body frame itself — the implicit single-sensor default, identity extrinsic.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FrameId(pub u32);
+
+impl FrameId {
+    /// The body frame (`base_link`); measurements in it need no extrinsic.
+    pub const BASE: FrameId = FrameId(0);
+}
+
 /// A single inertial measurement: angular rate (gyroscope) and proper acceleration
 /// (accelerometer), both in the IMU body frame, SI units.
 ///
@@ -39,6 +52,8 @@ impl ImuSample {
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaserScan2D {
     pub stamp: Stamp,
+    /// The sensor frame the beams are expressed in ([`FrameId::BASE`] when untagged).
+    pub frame: FrameId,
     /// Angle of the first beam (rad).
     pub angle_min: f64,
     /// Angular step between consecutive beams (rad).
@@ -82,6 +97,7 @@ mod tests {
     fn scan_points_filters_invalid_returns_and_places_beams() {
         let scan = LaserScan2D {
             stamp: Stamp::from_nanos(0),
+            frame: FrameId::BASE,
             angle_min: 0.0,
             angle_increment: std::f64::consts::FRAC_PI_2,
             range_min: 0.1,
