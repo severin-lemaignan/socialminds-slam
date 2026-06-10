@@ -4,5 +4,7 @@
 rig:
   source: bag
 sensors:
+  odometry:
+    - topic: /odom
   scans:
     - topic: /scan

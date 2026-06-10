@@ -16,6 +16,7 @@
 pub mod bag;
 mod depth_msg;
 mod imu_msg;
+mod odom_msg;
 mod scan_msg;
 mod tf_msg;
 
@@ -27,6 +28,7 @@ use slam_types::{ImuSample, LaserScan2D, PointCloud};
 use bag::BagFile;
 pub use depth_msg::{parse_camera_info, parse_depth_image, DepthConfig, Intrinsics};
 pub use imu_msg::parse_imu;
+pub use odom_msg::parse_odometry;
 pub use scan_msg::parse_scan;
 pub use tf_msg::{parse_tf_message, StaticTransform};
 
@@ -337,6 +339,36 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
     }
     clouds.sort_by_key(|c| c.stamp);
     Ok((clouds, frame_id))
+}
+
+/// Read a `nav_msgs/Odometry` stream, time-sorted, plus its `child_frame_id`.
+pub fn read_odometry<P: AsRef<Path>>(
+    path: P,
+    topic: &str,
+) -> Result<(Vec<slam_types::OdomSample>, String), BagError> {
+    let mut bag = BagFile::open(path)?;
+    let wanted: BTreeSet<u32> = bag
+        .connections()
+        .iter()
+        .filter(|c| c.topic == topic && c.message_type == "nav_msgs/Odometry")
+        .map(|c| c.id)
+        .collect();
+    if wanted.is_empty() {
+        return Err(BagError::TopicNotFound(
+            topic.to_string(),
+            "nav_msgs/Odometry",
+        ));
+    }
+    let mut out = Vec::new();
+    let mut child = String::new();
+    bag.for_each_message(&wanted, |_, data| {
+        let (sample, c) = parse_odometry(data)?;
+        child = c;
+        out.push(sample);
+        Ok(())
+    })?;
+    out.sort_by_key(|s| s.stamp);
+    Ok((out, child))
 }
 
 /// Read the rigid sensor extrinsics a bag carries on `/tf_static` (ADR 0009: the

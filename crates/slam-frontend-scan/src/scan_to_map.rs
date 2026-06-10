@@ -183,9 +183,10 @@ pub struct ScanToMapOdometry {
     /// Anchor of the submap currently in `prev_*` (frozen once the overlap ends).
     prev_anchor: Se2,
     overlap_left: usize,
-    /// Frozen submaps: `(anchor pose at birth, 2D registration field)` — retained for
-    /// loop closure (and, next, re-localization signatures + graph re-posing).
-    frozen: Vec<(Se2, SparseTsdf)>,
+    /// Frozen submaps: `(anchor pose at birth, 2D registration field, 3D field)` —
+    /// retained for loop closure (scans re-register against the 2D field, depth
+    /// clouds against the 3D field) and re-localization signatures.
+    frozen: Vec<(Se2, SparseTsdf, SparseTsdf)>,
     /// Verified loop closures, in detection order (the pose-graph's loop edges).
     loops: Vec<LoopClosure>,
     /// Measured odometry relative between consecutive submap anchors (graph edges) —
@@ -196,6 +197,14 @@ pub struct ScanToMapOdometry {
     /// Whether any laser scan has been processed (gates depth→pose suppression:
     /// on scan-less datasets depth must keep correcting the pose).
     scan_seen: bool,
+    /// Whether `lifted` currently holds a depth cloud (loop closure then verifies
+    /// against frozen 3D fields instead of the 2D laser fields).
+    lifted_is_cloud: bool,
+    /// Wheel odometry as the motion prior (ADR 0012): planar pose at the latest
+    /// sample, and at the last exteroceptive update — their relative replaces the
+    /// constant-velocity prediction when present.
+    odom_now: Option<Se2>,
+    odom_at_event: Option<Se2>,
     /// Gravity-frame plane height of each lidar frame seen (for the depth band).
     lidar_planes: Vec<(FrameId, f64)>,
     /// Pose of the last map fusion, per modality (a shared threshold lets the 40 Hz
@@ -248,6 +257,9 @@ impl ScanToMapOdometry {
             odometry_edges: Vec::new(),
             graph: None,
             scan_seen: false,
+            lifted_is_cloud: false,
+            odom_now: None,
+            odom_at_event: None,
             lidar_planes: Vec::new(),
             last_integrated: None,
             last_integrated_cloud: None,
@@ -453,10 +465,10 @@ impl ScanToMapOdometry {
         if self.prev_map.is_some() {
             self.overlap_left = self.overlap_left.saturating_sub(1);
             if self.overlap_left == 0 {
-                self.prev_map = None;
-                if let Some(reg) = self.prev_reg.take() {
-                    self.frozen.push((self.prev_anchor, reg));
+                if let (Some(reg), Some(map3d)) = (self.prev_reg.take(), self.prev_map.take()) {
+                    self.frozen.push((self.prev_anchor, reg, map3d));
                 }
+                self.prev_map = None;
             }
         }
     }
@@ -494,7 +506,7 @@ impl ScanToMapOdometry {
 
     /// Anchor estimates: frozen submaps in order, then the active submap's anchor.
     pub fn anchors(&self) -> Vec<Se2> {
-        let mut a: Vec<Se2> = self.frozen.iter().map(|(anchor, _)| *anchor).collect();
+        let mut a: Vec<Se2> = self.frozen.iter().map(|(anchor, ..)| *anchor).collect();
         a.push(self.submap_birth);
         a
     }
@@ -530,6 +542,7 @@ impl ScanToMapOdometry {
             .map_or(0.0, |prev| (stamp - prev).as_seconds());
         self.submap_travel += self.last_motion.translation_norm();
         self.last_stamp = Some(stamp);
+        self.odom_at_event = self.odom_now;
 
         let last = if update_reg {
             self.last_integrated
@@ -558,9 +571,19 @@ impl ScanToMapOdometry {
         }
     }
 
+    /// Motion prediction. Wheel odometry, when streaming, is the prior (its relative
+    /// motion since the last exteroceptive update — the IMU-less robot's
+    /// proprioception, ADR 0012); otherwise dt-scaled constant velocity.
+    fn predict(&self, stamp: Stamp) -> Se2 {
+        if let (Some(now), Some(at_event)) = (self.odom_now, self.odom_at_event) {
+            return self.current.compose(&at_event.inverse().compose(&now));
+        }
+        self.predict_const_velocity(stamp)
+    }
+
     /// Constant-velocity prediction, scaled to the actual time since the last event
     /// (mixed-rate streams make a fixed per-event step model wrong).
-    fn predict(&self, stamp: Stamp) -> Se2 {
+    fn predict_const_velocity(&self, stamp: Stamp) -> Se2 {
         let dt = self
             .last_stamp
             .map_or(0.0, |prev| (stamp - prev).as_seconds());
@@ -664,7 +687,14 @@ impl ScanToMapOdometry {
         let band = self.cfg.tsdf.truncation * 0.9;
         let active_submap = self.frozen.len();
         let mut best: Option<LoopClosure> = None;
-        for (idx, (anchor, reg)) in self.frozen.iter().enumerate() {
+        let as_cloud = self.lifted_is_cloud;
+        let stride = if as_cloud {
+            (self.lifted.len() / self.cfg.max_registration_points).max(1)
+        } else {
+            1
+        };
+        for (idx, (anchor, reg, map3d)) in self.frozen.iter().enumerate() {
+            let field: &SparseTsdf = if as_cloud { map3d } else { reg };
             let dx = anchor.x - self.current.x;
             let dy = anchor.y - self.current.y;
             if dx.hypot(dy) > self.cfg.loop_radius {
@@ -684,7 +714,7 @@ impl ScanToMapOdometry {
                         );
                         let seed = anchor.inverse().compose(&seed_world);
                         let (rel_target, inliers) = Self::register_against(
-                            reg,
+                            field,
                             &self.lifted,
                             &mut self.world,
                             &mut self.samples,
@@ -693,6 +723,8 @@ impl ScanToMapOdometry {
                             self.cfg.max_iterations,
                             self.cfg.translation_epsilon,
                             self.cfg.rotation_epsilon,
+                            !as_cloud,
+                            stride,
                         );
                         if inliers >= self.cfg.loop_min_inliers
                             && best.is_none_or(|b| inliers > b.inliers)
@@ -750,7 +782,7 @@ impl ScanToMapOdometry {
             return;
         };
         debug_assert_eq!(optimized.len(), anchors.len());
-        for ((anchor, _), new_anchor) in self.frozen.iter_mut().zip(&optimized) {
+        for ((anchor, ..), new_anchor) in self.frozen.iter_mut().zip(&optimized) {
             *anchor = *new_anchor;
         }
         let new_active = *optimized.last().expect("non-empty");
@@ -774,14 +806,20 @@ impl ScanToMapOdometry {
         max_iterations: usize,
         translation_epsilon: f64,
         rotation_epsilon: f64,
+        flatten: bool,
+        stride: usize,
     ) -> (Se2, f64) {
         let mut transform = seed;
         let mut inliers = 0.0;
         for _ in 0..max_iterations {
             world.clear();
-            world.extend(lifted.iter().map(|&p| {
+            world.extend(lifted.iter().step_by(stride.max(1)).map(|&p| {
                 let q = Self::apply_planar(&transform, p);
-                Vec3::new(q.x, q.y, 0.0)
+                if flatten {
+                    Vec3::new(q.x, q.y, 0.0)
+                } else {
+                    q
+                }
             }));
             field.sample_batch(world, samples);
             let mut h = nalgebra::Matrix3::<f64>::zeros();
@@ -798,7 +836,7 @@ impl ScanToMapOdometry {
                 g += jac * s.sdf;
                 used += 1;
             }
-            inliers = used as f64 / lifted.len().max(1) as f64;
+            inliers = used as f64 / world.len().max(1) as f64;
             if used < 20 {
                 return (transform, 0.0);
             }
@@ -829,6 +867,16 @@ impl SlamSystem for ScanToMapOdometry {
         }
     }
 
+    fn process_odometry(&mut self, odom: &slam_types::OdomSample) {
+        // Planar projection of the platform's own pose estimate; consumed as
+        // relative motion in `predict` so its absolute frame never matters.
+        let planar = Se2::planar_projection_of(&odom.pose).0;
+        if self.odom_at_event.is_none() {
+            self.odom_at_event = Some(planar);
+        }
+        self.odom_now = Some(planar);
+    }
+
     fn process_scan(&mut self, scan: &LaserScan2D) {
         self.stats.scans += 1;
         let Some(extrinsic) = self.extrinsic(scan.frame) else {
@@ -836,6 +884,7 @@ impl SlamSystem for ScanToMapOdometry {
             return;
         };
         self.lift_scan(scan, &extrinsic);
+        self.lifted_is_cloud = false;
         if self.lifted.len() < self.cfg.min_valid_points {
             self.stats.skipped += 1;
             return;
@@ -871,6 +920,7 @@ impl SlamSystem for ScanToMapOdometry {
             return;
         };
         self.lift_cloud(cloud, &extrinsic);
+        self.lifted_is_cloud = true;
         if self.lifted.len() < self.cfg.min_valid_points {
             self.stats.skipped += 1;
             return;

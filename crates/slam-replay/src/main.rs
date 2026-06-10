@@ -105,6 +105,25 @@ struct Args {
     #[arg(long, value_name = "TOPIC", requires = "bag")]
     scan_topic: Option<String>,
 
+    /// `nav_msgs/Odometry` topic to stream from `--bag` (wheel odometry — the motion
+    /// prior, especially for IMU-less robots, ADR 0012).
+    #[arg(long, value_name = "TOPIC", requires = "bag")]
+    odom_topic: Option<String>,
+
+    /// Disable loop closure entirely (open-loop odometry; for A/B comparisons).
+    #[arg(long)]
+    no_loops: bool,
+
+    /// Override the loop-verification inlier threshold (default 0.55 suits clean
+    /// laser fans; people-heavy depth clouds may need lower — experiment knob).
+    #[arg(long, value_name = "FRACTION")]
+    loop_min_inliers: Option<f64>,
+
+    /// Disable the GTSAM pose graph: verified loops snap instead of optimising
+    /// (for A/B comparisons of stage 3b).
+    #[arg(long)]
+    no_graph: bool,
+
     /// Depth `sensor_msgs/Image` topic to stream from `--bag` as back-projected point
     /// clouds (M4 RGB-D). Use the aligned depth stream when available.
     #[arg(long, value_name = "TOPIC", requires = "bag")]
@@ -204,6 +223,7 @@ enum Event<'a> {
     Imu(&'a ImuSample),
     Scan(&'a LaserScan2D),
     Cloud(&'a slam_types::PointCloud),
+    Odom(&'a slam_types::OdomSample),
 }
 
 impl Event<'_> {
@@ -212,6 +232,7 @@ impl Event<'_> {
             Event::Imu(s) => s.stamp,
             Event::Scan(s) => s.stamp,
             Event::Cloud(c) => c.stamp,
+            Event::Odom(o) => o.stamp,
         }
     }
 }
@@ -222,9 +243,12 @@ fn merged_events<'a>(
     imu: &'a [ImuSample],
     scans: &'a [LaserScan2D],
     clouds: &'a [slam_types::PointCloud],
+    odometry: &'a [slam_types::OdomSample],
 ) -> Vec<Event<'a>> {
-    let mut events: Vec<Event<'a>> = Vec::with_capacity(imu.len() + scans.len() + clouds.len());
+    let mut events: Vec<Event<'a>> =
+        Vec::with_capacity(imu.len() + scans.len() + clouds.len() + odometry.len());
     events.extend(imu.iter().map(Event::Imu));
+    events.extend(odometry.iter().map(Event::Odom));
     events.extend(scans.iter().map(Event::Scan));
     events.extend(clouds.iter().map(Event::Cloud));
     // Stable: equal stamps keep IMU (pushed first) ahead of exteroceptive events, so
@@ -250,6 +274,7 @@ fn run_timed(
             Event::Imu(sample) => system.process_imu(sample),
             Event::Scan(scan) => system.process_scan(scan),
             Event::Cloud(cloud) => system.process_points(cloud),
+            Event::Odom(odom) => system.process_odometry(odom),
         }
         let est = system.current_estimate();
         latencies.push(t0.elapsed().as_nanos() as u64);
@@ -263,7 +288,7 @@ fn run_timed(
                 match event {
                     Event::Scan(scan) => hook(&VizEvent::Scan(scan), &est),
                     Event::Cloud(cloud) => hook(&VizEvent::Cloud(cloud), &est),
-                    Event::Imu(_) => {}
+                    Event::Imu(_) | Event::Odom(_) => {}
                 }
             }
         }
@@ -321,6 +346,7 @@ type BagInputs = (
     Vec<ImuSample>,
     Vec<LaserScan2D>,
     Vec<slam_types::PointCloud>,
+    Vec<slam_types::OdomSample>,
 );
 
 /// Load every stream named by a run configuration (ADR 0013) from the bag, in one
@@ -422,7 +448,20 @@ fn load_bag_inputs_from_config(
         clouds.extend(cs);
     }
     clouds.sort_by_key(|c| c.stamp);
-    Ok((imu, scans, clouds))
+
+    let mut odometry: Vec<slam_types::OdomSample> = Vec::new();
+    for o in &cfg.sensors.odometry {
+        let (samples, child) = slam_datasets::read_odometry(bag, &o.topic)
+            .with_context(|| format!("reading odometry from {}", o.topic))?;
+        eprintln!(
+            "slam-replay: {} odometry samples from {} (child frame {child:?})",
+            samples.len(),
+            o.topic
+        );
+        odometry.extend(samples);
+    }
+    odometry.sort_by_key(|s| s.stamp);
+    Ok((imu, scans, clouds, odometry))
 }
 
 fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<BagInputs> {
@@ -513,7 +552,19 @@ fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<B
         }
         None => Vec::new(),
     };
-    Ok((imu, scans, clouds))
+    let odometry = match &args.odom_topic {
+        Some(topic) => {
+            let (samples, child) = slam_datasets::read_odometry(bag, topic)
+                .with_context(|| format!("reading odometry from {topic}"))?;
+            eprintln!(
+                "slam-replay: {} odometry samples from {topic} (child frame {child:?})",
+                samples.len()
+            );
+            samples
+        }
+        None => Vec::new(),
+    };
+    Ok((imu, scans, clouds, odometry))
 }
 
 /// Split a `[FRAME=]FILE` CSV spec and resolve the frame against the rig.
@@ -628,7 +679,7 @@ fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    let (imu, scans, clouds): BagInputs = if let Some(bag) = &args.bag {
+    let (imu, scans, clouds, odometry): BagInputs = if let Some(bag) = &args.bag {
         match &run_cfg {
             Some(rc) => load_bag_inputs_from_config(bag, rc, rig.as_ref())?,
             None => load_bag_inputs(bag, &args, rig.as_ref())?,
@@ -637,6 +688,7 @@ fn main() -> Result<()> {
         (
             load_imu_csvs(&args.imu, rig.as_ref())?,
             load_scan_csvs(&args.scan, rig.as_ref())?,
+            Vec::new(),
             Vec::new(),
         )
     };
@@ -703,13 +755,18 @@ fn main() -> Result<()> {
                     extrinsics,
                 ))),
                 _ => {
-                    let mut odo = ScanToMapOdometry::with_extrinsics(
-                        init.pose,
-                        ScanToMapConfig::default(),
-                        extrinsics,
-                    );
+                    let mut cfg = ScanToMapConfig::default();
+                    if args.no_loops {
+                        cfg.loop_radius = 0.0;
+                    }
+                    if let Some(v) = args.loop_min_inliers {
+                        cfg.loop_min_inliers = v;
+                    }
+                    let mut odo = ScanToMapOdometry::with_extrinsics(init.pose, cfg, extrinsics);
                     // Verified loops feed the GTSAM pose graph (ADR 0010 stage 3b).
-                    odo.set_graph(Box::new(graph::GtsamAnchorGraph::default()));
+                    if !args.no_graph && !args.no_loops {
+                        odo.set_graph(Box::new(graph::GtsamAnchorGraph::default()));
+                    }
                     Engine::ScanToMap(Box::new(odo))
                 }
             }
@@ -784,7 +841,7 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    let events = merged_events(&imu, &scans, &clouds);
+    let events = merged_events(&imu, &scans, &clouds, &odometry);
     let (traj, latencies, wall) = run_timed(engine.as_dyn(), &events, on_scan);
 
     if let Engine::ScanToMap(odo) = &engine {

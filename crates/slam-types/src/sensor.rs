@@ -106,6 +106,17 @@ impl LaserScan2D {
     }
 }
 
+/// One wheel-odometry sample (`nav_msgs/Odometry` pose): the platform's own pose
+/// estimate in its odometry frame. Consumed as *relative* motion between samples —
+/// the motion prior, especially on IMU-less robots (ADR 0012).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct OdomSample {
+    pub stamp: Stamp,
+    /// The child frame the pose is for ([`FrameId::BASE`] when untagged).
+    pub frame: FrameId,
+    pub pose: crate::geometry::Pose,
+}
+
 /// A 3D point cloud in a sensor frame — e.g. a back-projected, downsampled RGB-D depth
 /// frame (the M4 front-end). Points are finite and range-clipped at ingest.
 #[derive(Debug, Clone, PartialEq)]

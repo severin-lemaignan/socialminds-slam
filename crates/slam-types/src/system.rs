@@ -3,7 +3,7 @@
 //! Lives in `slam-types` (not a front-end crate) so baselines, front-ends, and the fused
 //! engine are all driven identically by `slam-replay` and benchmarked by the harness.
 
-use crate::sensor::{ImuSample, LaserScan2D, PointCloud};
+use crate::sensor::{ImuSample, LaserScan2D, OdomSample, PointCloud};
 use crate::trajectory::StampedPose;
 
 /// A SLAM system: consumes sensor samples and reports a current pose estimate.
@@ -23,6 +23,9 @@ pub trait SlamSystem {
 
     /// Ingest one 3D point cloud (e.g. a back-projected RGB-D depth frame).
     fn process_points(&mut self, _cloud: &PointCloud) {}
+
+    /// Ingest one wheel-odometry sample.
+    fn process_odometry(&mut self, _odom: &OdomSample) {}
 
     /// The best current pose estimate, stamped at the latest processed sample.
     ///

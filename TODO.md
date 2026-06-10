@@ -28,9 +28,14 @@ motivate an item are noted inline.
       register against the 3D field where trilinear stencils are complete
       (camera-covered regions), 2D-field fallback elsewhere; the 2D field fades as
       RGB-D coverage grows (two cameras on the real robot).
-- [ ] **Wheel odometry** (`nav_msgs/Odometry` reader + baseline + later a factor):
-      present in all OpenLORIS bags; the paper's strongest market baseline
-      (ATE 4.26 at 99.9 % CR).
+- [x] **Wheel odometry** — `/odom` reader + motion prior in the front-end
+      (`--odom-topic`, config `sensors.odometry`). Measured: depth-only cafe1-1
+      2.8 m → **0.456 m** with the odom prior (558/569 clouds matched). Still open:
+      odometry as a graph factor and as a standalone baseline in the harness.
+- [ ] **Depth loop closure**: clouds now verify against frozen *3D* fields
+      (machinery in place, `--loop-min-inliers` knob), but verification never fires —
+      same strided-coverage physics as the market issue above; unblocked by
+      range-adaptive sampling.
 - [ ] Photometric/colored registration — *research note only*: illumination variance
       is the hard part; lifelong-SLAM evidence favours learned features over raw RGB.
 

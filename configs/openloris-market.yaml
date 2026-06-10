@@ -3,6 +3,8 @@
 rig:
   source: bag
 sensors:
+  odometry:
+    - topic: /odom
   imus:
     - gyro_topic: /d400/gyro/sample
       accel_topic: /d400/accel/sample

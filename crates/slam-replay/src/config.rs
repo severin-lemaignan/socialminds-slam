@@ -63,6 +63,14 @@ pub struct SensorsConfig {
     pub imus: Vec<ImuSensor>,
     #[serde(default)]
     pub depth: Vec<DepthSensor>,
+    #[serde(default)]
+    pub odometry: Vec<OdomSensor>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OdomSensor {
+    pub topic: String,
 }
 
 #[derive(Debug, Deserialize)]
