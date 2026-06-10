@@ -161,6 +161,11 @@ impl ScanToMapOdometry {
         self.stats
     }
 
+    /// The active 3D submap (the map *product*) — export/visualization path.
+    pub fn map(&self) -> &SparseTsdf {
+        &self.map
+    }
+
     fn extrinsic(&self, frame: FrameId) -> Option<Pose> {
         match self.extrinsics.get(frame.0 as usize) {
             Some(t) => Some(*t),

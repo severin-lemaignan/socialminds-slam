@@ -16,3 +16,4 @@ get the next number; superseded ones are marked, not deleted. Use
 | [0008](0008-inhouse-bag-reader.md) | In-house indexed ROS1 bag reader (replacing the `rosbag` crate) | accepted |
 | [0009](0009-sensor-rig-model.md) | Sensor rig from URDF + CameraInfo; frame-tagged measurements | accepted |
 | [0010](0010-3d-state-vdb-submap-registration.md) | Full-3D state; TSDF submap registration (Rust + system OpenVDB backends); fast re-localization | accepted |
+| [0011](0011-visualization-stack.md) | Visualization: rerun for live/progressive 3D (feature-gated); matplotlib 2D stays | accepted |

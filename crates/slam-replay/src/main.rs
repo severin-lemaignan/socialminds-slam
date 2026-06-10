@@ -8,6 +8,7 @@
 //! compute-metrics JSON sidecar.
 
 mod metrics;
+mod viz;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -110,6 +111,18 @@ struct Args {
     /// Gravity magnitude (m/s²) for dead-reckoning.
     #[arg(long, default_value_t = slam_baseline::STANDARD_GRAVITY)]
     gravity: f64,
+
+    /// Stream the run to the rerun viewer (ADR 0011): `spawn` (live), `connect`
+    /// (running viewer), or `save:FILE.rrd` (record for timeline scrubbing).
+    /// Needs a build with `--features viz`. Adds overhead — not for benchmarking.
+    #[arg(long, value_name = "MODE")]
+    rerun: Option<String>,
+
+    /// Write the final TSDF submap (scan-matching-3d only) as a binary voxel dump:
+    /// `STSD` magic, u32 version, f64 voxel size, u64 count, then per voxel
+    /// `i32 ix, iy, iz; f32 tsdf, weight` (little-endian).
+    #[arg(long, value_name = "FILE")]
+    map_out: Option<PathBuf>,
 }
 
 /// Initial pose + velocity for a run.
@@ -153,6 +166,9 @@ fn initial_state_from_tum(path: &Path) -> Result<InitialState> {
     })
 }
 
+/// Per-scan visualization hook (current scan + the estimate it produced).
+type ScanHook<'a> = &'a mut dyn FnMut(&LaserScan2D, &slam_types::StampedPose);
+
 /// One time-stamped sensor event from any input stream.
 enum Event<'a> {
     Imu(&'a ImuSample),
@@ -195,6 +211,7 @@ fn merged_events<'a>(imu: &'a [ImuSample], scans: &'a [LaserScan2D]) -> Vec<Even
 fn run_timed(
     system: &mut dyn SlamSystem,
     events: &[Event],
+    mut on_scan: Option<ScanHook<'_>>,
 ) -> (Trajectory, Vec<u64>, std::time::Duration) {
     let mut traj = Trajectory::new();
     let mut latencies = Vec::with_capacity(events.len());
@@ -213,9 +230,42 @@ fn run_timed(
                 traj.push(est);
                 last_stamp = Some(est.stamp);
             }
+            // Visualization hook, outside the per-event latency clock.
+            if let (Some(hook), Event::Scan(scan)) = (on_scan.as_mut(), event) {
+                hook(scan, &est);
+            }
         }
     }
     (traj, latencies, start.elapsed())
+}
+
+/// Write the binary TSDF voxel dump (see `--map-out` help for the format).
+fn write_map_dump(map: &dyn slam_map::TsdfMap, path: &Path) -> Result<()> {
+    use io::Write as _;
+    let mut records: Vec<u8> = Vec::new();
+    let mut count: u64 = 0;
+    map.visit_voxels(&mut |ix, iy, iz, tsdf, weight| {
+        for v in [ix, iy, iz] {
+            records.extend_from_slice(&v.to_le_bytes());
+        }
+        records.extend_from_slice(&tsdf.to_le_bytes());
+        records.extend_from_slice(&weight.to_le_bytes());
+        count += 1;
+    });
+    let file = std::fs::File::create(path)
+        .with_context(|| format!("creating map dump {}", path.display()))?;
+    let mut w = io::BufWriter::new(file);
+    w.write_all(b"STSD")?;
+    w.write_all(&1u32.to_le_bytes())?;
+    w.write_all(&map.config().voxel_size.to_le_bytes())?;
+    w.write_all(&count.to_le_bytes())?;
+    w.write_all(&records)?;
+    eprintln!(
+        "slam-replay: wrote {count} voxels ({:.1} cm grid) to {}",
+        map.config().voxel_size * 100.0,
+        path.display()
+    );
+    Ok(())
 }
 
 fn input_span_seconds(events: &[Event]) -> f64 {
@@ -420,13 +470,30 @@ fn main() -> Result<()> {
         None => InitialState::default(),
     };
 
-    let mut system: Box<dyn SlamSystem> = match args.system {
-        System::Stationary => Box::new(Stationary::anchored_at(init.pose)),
-        System::DeadReckoning => Box::new(ImuDeadReckoning::with_initial_state(
+    let viz_extrinsics = match &rig {
+        Some(rig) => rig.extrinsics().to_vec(),
+        None => Vec::new(),
+    };
+    // ScanToMap stays concrete so its TSDF is reachable for --map-out / --rerun.
+    enum Engine {
+        Dyn(Box<dyn SlamSystem>),
+        ScanToMap(Box<ScanToMapOdometry>),
+    }
+    impl Engine {
+        fn as_dyn(&mut self) -> &mut dyn SlamSystem {
+            match self {
+                Engine::Dyn(b) => b.as_mut(),
+                Engine::ScanToMap(s) => s.as_mut(),
+            }
+        }
+    }
+    let mut engine = match args.system {
+        System::Stationary => Engine::Dyn(Box::new(Stationary::anchored_at(init.pose))),
+        System::DeadReckoning => Engine::Dyn(Box::new(ImuDeadReckoning::with_initial_state(
             init.pose,
             init.velocity,
             args.gravity,
-        )),
+        ))),
         System::ScanMatching | System::ScanMatching3d => {
             let extrinsics = match &rig {
                 Some(rig) => {
@@ -438,22 +505,83 @@ fn main() -> Result<()> {
                 None => Vec::new(),
             };
             match args.system {
-                System::ScanMatching => Box::new(ScanOdometry::with_extrinsics(
+                System::ScanMatching => Engine::Dyn(Box::new(ScanOdometry::with_extrinsics(
                     init.pose,
                     ScanOdometryConfig::default(),
                     extrinsics,
-                )),
-                _ => Box::new(ScanToMapOdometry::with_extrinsics(
+                ))),
+                _ => Engine::ScanToMap(Box::new(ScanToMapOdometry::with_extrinsics(
                     init.pose,
                     ScanToMapConfig::default(),
                     extrinsics,
-                )),
+                ))),
             }
         }
     };
 
+    let mut viz_sink = match &args.rerun {
+        Some(mode) => {
+            let v = viz::Viz::new(mode)?;
+            if let Some(path) = &args.init_pose_from_tum {
+                if let Ok(gt) = Trajectory::read_tum_file(path) {
+                    v.log_groundtruth(&gt);
+                }
+            }
+            Some(v)
+        }
+        None => None,
+    };
+    // Per-scan viz hook: lift beams through the (static) extrinsic, into world via the
+    // estimate. Attitude is not replayed here — close enough for inspection.
+    let mut hook;
+    let on_scan: Option<ScanHook<'_>> = match viz_sink.as_mut() {
+        Some(viz) => {
+            hook = move |scan: &LaserScan2D, est: &slam_types::StampedPose| {
+                let t_bs = viz_extrinsics
+                    .get(scan.frame.0 as usize)
+                    .copied()
+                    .unwrap_or_else(Pose::identity);
+                let world: Vec<[f32; 3]> = scan
+                    .ranges
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, &r)| {
+                        let r = r as f64;
+                        if !r.is_finite() || r < scan.range_min || r > scan.range_max {
+                            return None;
+                        }
+                        let a = scan.angle_min + i as f64 * scan.angle_increment;
+                        let p = est.pose.transform_point(t_bs.transform_point(Vec3::new(
+                            r * a.cos(),
+                            r * a.sin(),
+                            0.0,
+                        )));
+                        Some([p.x as f32, p.y as f32, p.z as f32])
+                    })
+                    .collect();
+                viz.log_scan(est.stamp.as_seconds(), &est.pose, world);
+            };
+            Some(&mut hook)
+        }
+        None => None,
+    };
+
     let events = merged_events(&imu, &scans);
-    let (traj, latencies, wall) = run_timed(system.as_mut(), &events);
+    let (traj, latencies, wall) = run_timed(engine.as_dyn(), &events, on_scan);
+
+    if let Engine::ScanToMap(odo) = &engine {
+        if let Some(path) = &args.map_out {
+            write_map_dump(odo.map(), path)?;
+        }
+        if let Some(viz) = &viz_sink {
+            let end = events.last().map_or(0.0, |e| e.stamp().as_seconds());
+            viz.log_tsdf(odo.map(), end);
+        }
+    } else if args.map_out.is_some() {
+        bail!("--map-out needs --baseline scan-matching-3d (the TSDF front-end)");
+    }
+
+    let system = engine.as_dyn();
     let span = input_span_seconds(&events);
     let m = ProcessingMetrics::new(system.name(), events.len(), span, wall, latencies);
     eprintln!(

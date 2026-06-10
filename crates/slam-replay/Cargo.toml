@@ -20,5 +20,12 @@ slam-frontend-scan.workspace = true
 slam-datasets.workspace = true
 # Sensor frames + extrinsics from the robot's URDF (--urdf, ADR 0009).
 slam-rig.workspace = true
+# TSDF map access for --map-out / --rerun (the 3D front-end's map product).
+slam-map.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+rerun = { version = "0.33.0", default-features = false, features = ["sdk"], optional = true }
+
+[features]
+# Live / progressive 3D visualization via the rerun viewer (ADR 0011).
+viz = ["dep:rerun"]

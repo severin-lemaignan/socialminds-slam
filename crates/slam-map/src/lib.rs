@@ -71,4 +71,9 @@ pub trait TsdfMap {
 
     /// Number of allocated voxels (capacity/diagnostics, the memory-budget signal).
     fn allocated_voxels(&self) -> usize;
+
+    /// Visit every observed voxel as `(ix, iy, iz, tsdf, weight)` (global voxel
+    /// indices; centre of voxel i at `(i + 0.5) · voxel_size`). Export/viz path —
+    /// not for the registration hot loop.
+    fn visit_voxels(&self, visit: &mut dyn FnMut(i32, i32, i32, f32, f32));
 }

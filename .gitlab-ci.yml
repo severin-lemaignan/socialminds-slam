@@ -37,6 +37,8 @@ rust:checks:
     - cargo fmt --all --check
     - cargo clippy --workspace --all-targets -- -D warnings
     - cargo test --workspace
+    # The feature-gated rerun viz path must not bit-rot (ADR 0011); check-only.
+    - cargo check -p slam-replay --features viz
 
 # End-to-end evaluation: build the engine binaries, run the Python harness unit tests,
 # then the gated self-test benchmark (synthesize -> run -> score -> gate). No GPU, no

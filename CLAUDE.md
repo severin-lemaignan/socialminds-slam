@@ -106,6 +106,11 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
   (ROS1 bag → CSV, `--list`). `benchmark --direct-bag` skips CSV materialisation.
 - `python -m harness.viz --openloris cafe1-1` — interactive scan/trajectory debugger
   (scans through estimated poses + ground truth; `--save` for headless PNG).
+- **Live/progressive 3D viz (ADR 0011):** build with `--features viz`, then
+  `slam-replay --rerun spawn` (live during the run) or `--rerun save:run.rrd`
+  (timeline-scrubbable replay of the map building); viewer via `pip install rerun-sdk`.
+  `--map-out FILE` dumps raw TSDF voxels (STSD binary) headlessly. `--rig-from-bag`
+  builds the rig from a bag's `/tf_static` (e.g. OpenLORIS: IMUs ride the cameras).
 
 ## Status
 **M0 done** (harness + trivial baselines). **M1 done**: EuRoC + OpenLORIS(IMU) adapters,

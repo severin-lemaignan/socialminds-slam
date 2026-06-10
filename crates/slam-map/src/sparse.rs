@@ -212,6 +212,24 @@ impl TsdfMap for SparseTsdf {
     fn allocated_voxels(&self) -> usize {
         self.blocks.len() * BLOCK_VOXELS
     }
+
+    fn visit_voxels(&self, visit: &mut dyn FnMut(i32, i32, i32, f32, f32)) {
+        for (key, block) in &self.blocks {
+            for (off, v) in block.iter().enumerate() {
+                if v.weight <= 0.0 {
+                    continue;
+                }
+                let off = off as i32;
+                visit(
+                    (key.0 << BLOCK_BITS) | (off >> (2 * BLOCK_BITS)),
+                    (key.1 << BLOCK_BITS) | ((off >> BLOCK_BITS) & BLOCK_MASK),
+                    (key.2 << BLOCK_BITS) | (off & BLOCK_MASK),
+                    v.tsdf,
+                    v.weight,
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
