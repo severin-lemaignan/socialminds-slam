@@ -17,6 +17,9 @@ eval/_run/
 *.tum
 *.bag
 *.mcap
+
+docs/*.pdf
+
 # Small committed test fixtures are the exception to the data-is-never-committed rule.
 !eval/**/fixtures/**/*.tum
 !crates/**/tests/fixtures/**/*.bag
