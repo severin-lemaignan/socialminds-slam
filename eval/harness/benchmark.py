@@ -53,14 +53,26 @@ class SystemSpec:
     input: str = "imu"
 
 
-def _sequence_inputs(seq: datasets.Sequence, system: SystemSpec) -> tuple[Path | None, Path | None]:
-    """(imu_csv, scan_csv) to pass for this (sequence, system), or raises if unrunnable."""
+def _sequence_inputs(seq: datasets.Sequence, system: SystemSpec) -> dict:
+    """`compute.run_with_metrics` input kwargs for this (sequence, system).
+
+    The system's primary stream is passed — as a CSV, or streamed directly from the
+    ROS1 bag when the sequence is bag-backed. Raises if the sequence lacks the stream.
+    """
     if system.input == "imu":
-        return seq.imu_csv, None
+        if seq.bag is not None:
+            return {
+                "bag": seq.bag,
+                "gyro_topic": seq.bag_gyro_topic,
+                "accel_topic": seq.bag_accel_topic,
+            }
+        return {"imu_csv": seq.imu_csv}
     if system.input == "scan":
+        if seq.bag is not None and seq.bag_scan_topic is not None:
+            return {"bag": seq.bag, "scan_topic": seq.bag_scan_topic}
         if seq.scan_csv is None:
             raise ValueError(f"{seq.name} has no scan stream for {system.name}")
-        return None, seq.scan_csv
+        return {"scan_csv": seq.scan_csv}
     raise ValueError(f"unknown system input kind {system.input!r}")
 
 
@@ -91,7 +103,8 @@ def run_case(
     replay_bin = replay_bin or replay.find_replay_binary()
     init_pose = seq.groundtruth_tum if init_pose_from_groundtruth else None
 
-    imu_csv, scan_csv = _sequence_inputs(seq, system)
+    inputs = _sequence_inputs(seq, system)
+    imu_csv = inputs.pop("imu_csv", None)
     ate, rpe, rtf, lat_p99, rss = [], [], [], [], []
     for i in range(repeats):
         out_tum = Path(workdir) / f"{system.name}_{seq.name}_{i}.tum"
@@ -100,8 +113,8 @@ def run_case(
             system.baseline,
             imu_csv,
             out_tum,
-            scan_csv=scan_csv,
             init_pose_tum=init_pose,
+            **inputs,
         )
         try:
             ate.append(metrics.ate(seq.groundtruth_tum, out_tum, align=align).rmse)
@@ -144,7 +157,7 @@ def run_matrix(
     results = []
     for seq in sequences:
         for system in systems:
-            if system.input == "scan" and seq.scan_csv is None:
+            if system.input == "scan" and seq.scan_csv is None and seq.bag_scan_topic is None:
                 print(f"skipping {system.name} on {seq.name}: no scan stream")
                 continue
             results.append(
@@ -240,13 +253,20 @@ def default_systems() -> list[SystemSpec]:
 
 
 def gather_sequences(
-    euroc: list[str], openloris: list[str], synthetic: bool, workdir: Path
+    euroc: list[str],
+    openloris: list[str],
+    synthetic: bool,
+    workdir: Path,
+    *,
+    direct_bag: bool = False,
 ) -> list[datasets.Sequence]:
     """Materialise the requested sequences under ``workdir``.
 
     Real datasets are picked up from the `harness.fetch` cache (never downloaded here);
     the synthetic sequence is included when asked for — or as the default when nothing
     real is requested, which keeps the bare `python -m harness.benchmark` download-free.
+    With ``direct_bag``, OpenLORIS sequences skip CSV materialisation entirely:
+    `slam-replay --bag` streams the topics straight from the bag on every run.
     """
     from . import fetch
 
@@ -258,6 +278,22 @@ def gather_sequences(
         seqs.append(datasets.convert_euroc(mav0, workdir / name, name=name))
     for name in openloris:
         bag, gt = fetch.locate_openloris(name)
+        if direct_bag:
+            seqs.append(
+                datasets.Sequence(
+                    name=name,
+                    source="openloris",
+                    imu_csv=None,
+                    groundtruth_tum=gt,
+                    duration_s=datasets._tum_duration(gt),
+                    has_gyro=True,
+                    bag=bag,
+                    bag_gyro_topic=datasets.OPENLORIS_GYRO_TOPIC,
+                    bag_accel_topic=datasets.OPENLORIS_ACCEL_TOPIC,
+                    bag_scan_topic=datasets.OPENLORIS_SCAN_TOPIC,
+                )
+            )
+            continue
         # Materialise into the data cache, not the throwaway workdir, and reuse across
         # runs. Delete the dir to force re-extraction.
         cache = fetch.cache_root() / "openloris" / "_materialized" / name
@@ -333,6 +369,11 @@ def main(argv: list[str] | None = None) -> int:
         help="include the synthetic sequence alongside real ones (it is the default when none are requested)",
     )
     p.add_argument(
+        "--direct-bag",
+        action="store_true",
+        help="stream OpenLORIS topics straight from the bag (slam-replay --bag) instead of materialising CSVs",
+    )
+    p.add_argument(
         "--init-pose-from-gt",
         action="store_true",
         help="seed each run with the ground-truth initial pose (gravity-aligns dead-reckoning on real data)",
@@ -341,7 +382,9 @@ def main(argv: list[str] | None = None) -> int:
 
     with tempfile.TemporaryDirectory(prefix="slam-bench-") as tmp:
         tmp = Path(tmp)
-        seqs = gather_sequences(args.euroc, args.openloris, args.synthetic, tmp)
+        seqs = gather_sequences(
+            args.euroc, args.openloris, args.synthetic, tmp, direct_bag=args.direct_bag
+        )
         results = run_matrix(
             seqs,
             default_systems(),

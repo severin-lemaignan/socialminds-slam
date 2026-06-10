@@ -16,5 +16,7 @@ path = "src/main.rs"
 slam-types.workspace = true
 slam-baseline.workspace = true
 slam-frontend-scan.workspace = true
+# Direct ROS1-bag input (--bag): stream topics without the CSV extraction stage.
+slam-datasets.workspace = true
 anyhow.workspace = true
 clap.workspace = true

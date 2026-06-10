@@ -203,6 +203,45 @@ pub fn read_streams_from_bag<P: AsRef<Path>>(
     Ok(out)
 }
 
+/// Merge RealSense-style split IMU streams into one 6-axis stream.
+///
+/// OpenLORIS (and RealSense devices generally) publish gyro and accel as *separate*
+/// `sensor_msgs/Imu` topics at different rates. The gyro is the denser stream, so its
+/// samples are the time base and pass through verbatim; accel is linearly interpolated
+/// at each gyro stamp. Gyro samples outside the accel time span are dropped (no
+/// extrapolation). Both inputs must be time-sorted (bag readers return them sorted).
+/// Mirrors `harness.datasets.merge_split_imu` on the Python side.
+pub fn merge_split_imu(gyro: &[ImuSample], accel: &[ImuSample]) -> Vec<ImuSample> {
+    let (first, last) = match (accel.first(), accel.last()) {
+        (Some(f), Some(l)) => (f.stamp, l.stamp),
+        _ => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(gyro.len());
+    let mut i = 0;
+    for g in gyro {
+        if g.stamp < first || g.stamp > last {
+            continue;
+        }
+        while i + 1 < accel.len() && accel[i + 1].stamp < g.stamp {
+            i += 1;
+        }
+        let a0 = &accel[i];
+        let a1 = &accel[(i + 1).min(accel.len() - 1)];
+        let dt = (a1.stamp - a0.stamp).as_seconds();
+        let w = if dt == 0.0 {
+            0.0
+        } else {
+            (g.stamp - a0.stamp).as_seconds() / dt
+        };
+        out.push(ImuSample::new(
+            g.stamp,
+            g.gyro,
+            a0.accel + (a1.accel - a0.accel) * w,
+        ));
+    }
+    out
+}
+
 /// Read the IMU stream from a ROS1 bag, returning time-sorted samples.
 ///
 /// Topic selection as in [`resolve_topic`].
@@ -229,4 +268,56 @@ pub fn read_scans_from_bag<P: AsRef<Path>>(
     )?;
     let mut streams = read_streams_from_bag(path, &[], &[&chosen])?;
     Ok(streams.scans.remove(&chosen).unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use slam_types::{Stamp, Vec3};
+
+    fn imu(t: f64, g: f64, a: f64) -> ImuSample {
+        ImuSample::new(
+            Stamp::from_seconds(t),
+            Vec3::new(g, g, g),
+            Vec3::new(a, a, a),
+        )
+    }
+
+    #[test]
+    fn merge_interpolates_accel_at_gyro_stamps() {
+        let gyro = vec![imu(1.0, 0.1, 0.0), imu(1.5, 0.2, 0.0), imu(2.0, 0.3, 0.0)];
+        let accel = vec![imu(1.0, 0.0, 10.0), imu(2.0, 0.0, 20.0)];
+        let merged = merge_split_imu(&gyro, &accel);
+        assert_eq!(merged.len(), 3);
+        // Gyro columns (stamp included) pass through verbatim.
+        assert_eq!(merged[1].stamp, gyro[1].stamp);
+        assert_eq!(merged[1].gyro, gyro[1].gyro);
+        // Accel is lerped at the gyro stamp: midway between 10 and 20.
+        assert!((merged[1].accel.x - 15.0).abs() < 1e-12);
+        assert!((merged[2].accel.x - 20.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn merge_drops_gyro_outside_accel_span() {
+        let gyro = vec![imu(0.5, 0.1, 0.0), imu(1.5, 0.2, 0.0), imu(2.5, 0.3, 0.0)];
+        let accel = vec![imu(1.0, 0.0, 10.0), imu(2.0, 0.0, 20.0)];
+        let merged = merge_split_imu(&gyro, &accel);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].stamp, Stamp::from_seconds(1.5));
+    }
+
+    #[test]
+    fn merge_handles_empty_streams() {
+        assert!(merge_split_imu(&[], &[imu(1.0, 0.0, 1.0)]).is_empty());
+        assert!(merge_split_imu(&[imu(1.0, 0.1, 0.0)], &[]).is_empty());
+    }
+
+    #[test]
+    fn merge_single_accel_sample_is_constant() {
+        let gyro = vec![imu(1.0, 0.1, 0.0)];
+        let accel = vec![imu(1.0, 0.0, 10.0)];
+        let merged = merge_split_imu(&gyro, &accel);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].accel.x, 10.0);
+    }
 }

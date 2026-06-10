@@ -1,6 +1,7 @@
 //! `slam-replay`: drive a [`SlamSystem`] over recorded sensor input, emit a TUM trajectory.
 //!
-//! Inputs are recorded streams (IMU CSV, scan CSV); whatever is provided is merged into
+//! Inputs are recorded streams — IMU/scan CSVs, or topics streamed **directly from a
+//! ROS1 bag** (`--bag`, no CSV extraction stage). Whatever is provided is merged into
 //! one time-ordered event stream and fed to the chosen system — each system consumes the
 //! streams it understands and ignores the rest. The "inputs → TUM trajectory" contract
 //! the harness depends on never changes. With `--metrics` it also writes a
@@ -47,6 +48,28 @@ struct Args {
     /// Scan CSV input (`t angle_min angle_increment range_min range_max n r…`).
     #[arg(long, value_name = "FILE")]
     scan: Option<PathBuf>,
+
+    /// ROS1 bag input: stream topics directly, no CSV extraction stage. Select streams
+    /// with `--imu-topic` (or `--gyro-topic` + `--accel-topic`) and/or `--scan-topic`.
+    #[arg(long, value_name = "FILE", conflicts_with_all = ["imu", "scan"])]
+    bag: Option<PathBuf>,
+
+    /// Single 6-axis `sensor_msgs/Imu` topic to stream from `--bag`.
+    #[arg(long, value_name = "TOPIC", requires = "bag", conflicts_with_all = ["gyro_topic", "accel_topic"])]
+    imu_topic: Option<String>,
+
+    /// Gyro half of a RealSense-style split IMU (with `--accel-topic`); the streams are
+    /// merged with the gyro as time base, accel linearly interpolated.
+    #[arg(long, value_name = "TOPIC", requires = "bag")]
+    gyro_topic: Option<String>,
+
+    /// Accel half of a RealSense-style split IMU (with `--gyro-topic`).
+    #[arg(long, value_name = "TOPIC", requires = "bag")]
+    accel_topic: Option<String>,
+
+    /// `sensor_msgs/LaserScan` topic to stream from `--bag`.
+    #[arg(long, value_name = "TOPIC", requires = "bag")]
+    scan_topic: Option<String>,
 
     /// Output TUM trajectory file. Defaults to stdout.
     #[arg(long, value_name = "FILE")]
@@ -179,35 +202,74 @@ fn input_span_seconds(events: &[Event]) -> f64 {
     }
 }
 
+/// Stream the requested topics from a ROS1 bag in one pass, merging a split
+/// gyro/accel pair into a single 6-axis IMU stream when asked for.
+fn load_bag_inputs(bag: &Path, args: &Args) -> Result<(Vec<ImuSample>, Vec<LaserScan2D>)> {
+    let imu_topics: Vec<&str> = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
+        (Some(imu), None, None) => vec![imu],
+        (None, Some(gyro), Some(accel)) => vec![gyro, accel],
+        (None, None, None) => vec![],
+        _ => bail!("pass both --gyro-topic and --accel-topic, or neither"),
+    };
+    let scan_topics: Vec<&str> = args.scan_topic.iter().map(String::as_str).collect();
+    if imu_topics.is_empty() && scan_topics.is_empty() {
+        bail!(
+            "--bag needs at least one stream: --imu-topic (or --gyro-topic + --accel-topic) \
+             and/or --scan-topic"
+        );
+    }
+
+    let mut streams = slam_datasets::read_streams_from_bag(bag, &imu_topics, &scan_topics)
+        .with_context(|| format!("reading bag {}", bag.display()))?;
+    let imu = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
+        (Some(topic), _, _) => streams.imu.remove(topic.as_str()).unwrap_or_default(),
+        (_, Some(gyro), Some(accel)) => slam_datasets::merge_split_imu(
+            &streams.imu.remove(gyro.as_str()).unwrap_or_default(),
+            &streams.imu.remove(accel.as_str()).unwrap_or_default(),
+        ),
+        _ => Vec::new(),
+    };
+    let scans = match &args.scan_topic {
+        Some(topic) => streams.scans.remove(topic.as_str()).unwrap_or_default(),
+        None => Vec::new(),
+    };
+    Ok((imu, scans))
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let imu: Vec<ImuSample> = match &args.imu {
-        Some(path) => {
-            let file = std::fs::File::open(path)
-                .with_context(|| format!("opening IMU file {}", path.display()))?;
-            slam_types::read_imu(io::BufReader::new(file))
-                .with_context(|| format!("reading IMU file {}", path.display()))?
-        }
-        None => Vec::new(),
-    };
-    let scans: Vec<LaserScan2D> = match &args.scan {
-        Some(path) => {
-            let file = std::fs::File::open(path)
-                .with_context(|| format!("opening scan file {}", path.display()))?;
-            slam_types::read_scans(io::BufReader::new(file))
-                .with_context(|| format!("reading scan file {}", path.display()))?
-        }
-        None => Vec::new(),
+    let (imu, scans): (Vec<ImuSample>, Vec<LaserScan2D>) = if let Some(bag) = &args.bag {
+        load_bag_inputs(bag, &args)?
+    } else {
+        let imu = match &args.imu {
+            Some(path) => {
+                let file = std::fs::File::open(path)
+                    .with_context(|| format!("opening IMU file {}", path.display()))?;
+                slam_types::read_imu(io::BufReader::new(file))
+                    .with_context(|| format!("reading IMU file {}", path.display()))?
+            }
+            None => Vec::new(),
+        };
+        let scans = match &args.scan {
+            Some(path) => {
+                let file = std::fs::File::open(path)
+                    .with_context(|| format!("opening scan file {}", path.display()))?;
+                slam_types::read_scans(io::BufReader::new(file))
+                    .with_context(|| format!("reading scan file {}", path.display()))?
+            }
+            None => Vec::new(),
+        };
+        (imu, scans)
     };
 
     // Each system needs its primary stream; running it on silence is a usage error.
     match args.system {
         System::Stationary | System::DeadReckoning if imu.is_empty() => {
-            bail!("this system consumes IMU data: pass --imu")
+            bail!("this system consumes IMU data: pass --imu, or --bag with IMU topics")
         }
         System::ScanMatching if scans.is_empty() => {
-            bail!("scan-matching consumes laser scans: pass --scan")
+            bail!("scan-matching consumes laser scans: pass --scan, or --bag with --scan-topic")
         }
         _ => {}
     }

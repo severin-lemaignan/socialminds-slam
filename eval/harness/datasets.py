@@ -28,16 +28,22 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class Sequence:
-    """A benchmark-ready sequence materialised on disk."""
+    """A benchmark-ready sequence: CSVs materialised on disk, or a bag streamed direct."""
 
     name: str
     source: str
-    imu_csv: Path
+    imu_csv: Path | None
     groundtruth_tum: Path
     duration_s: float
     has_gyro: bool
     # Planar laser scans (scan CSV), when the source records a 2D lidar (M3 front-end).
     scan_csv: Path | None = None
+    # Direct-bag replay: `slam-replay --bag` streams these topics straight from the ROS1
+    # bag, skipping CSV materialisation entirely (the split IMU is merged in Rust).
+    bag: Path | None = None
+    bag_gyro_topic: str | None = None
+    bag_accel_topic: str | None = None
+    bag_scan_topic: str | None = None
 
 
 def _ns_to_seconds_str(ns: int) -> str:
@@ -248,6 +254,14 @@ def _imu_csv_duration(imu_csv: Path) -> float:
 # merge time base.
 OPENLORIS_GYRO_TOPIC = "/d400/gyro/sample"
 OPENLORIS_ACCEL_TOPIC = "/d400/accel/sample"
+# The Hokuyo UTM-30LX planar lidar.
+OPENLORIS_SCAN_TOPIC = "/scan"
+
+
+def _tum_duration(tum_path: Path) -> float:
+    """Span (seconds) between the first and last pose of a TUM trajectory file."""
+    # Same line shape as an IMU CSV (timestamp first), so the parser is shared.
+    return _imu_csv_duration(tum_path)
 
 
 def _parse_imu_rows(path: Path) -> list[list[str]]:
@@ -299,7 +313,7 @@ def materialize_openloris(
     gyro_topic: str | None = None,
     accel_topic: str | None = None,
     extract_scans: bool = True,
-    scan_topic: str = "/scan",
+    scan_topic: str = OPENLORIS_SCAN_TOPIC,
     bag2imu_bin: Path | None = None,
     bag2csv_bin: Path | None = None,
 ) -> Sequence:

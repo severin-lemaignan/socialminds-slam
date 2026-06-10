@@ -49,15 +49,19 @@ def run_with_metrics(
     out_tum: Path,
     *,
     scan_csv: Path | None = None,
+    bag: Path | None = None,
+    gyro_topic: str | None = None,
+    accel_topic: str | None = None,
+    scan_topic: str | None = None,
     init_pose_tum: Path | None = None,
     poll_interval_s: float = 0.002,
 ) -> ComputeStats:
     """Run one system, returning its accuracy-agnostic compute metrics.
 
-    Whatever input streams are given (IMU CSV, scan CSV) are passed through; the system
-    consumes what it understands. Writes the trajectory to ``out_tum`` and a metrics
-    sidecar next to it; samples the child's peak RSS while it runs (VmHWM is monotonic,
-    so the last sample is the peak).
+    Whatever input streams are given (IMU CSV, scan CSV — or topics streamed directly
+    from a ROS1 ``bag``) are passed through; the system consumes what it understands.
+    Writes the trajectory to ``out_tum`` and a metrics sidecar next to it; samples the
+    child's peak RSS while it runs (VmHWM is monotonic, so the last sample is the peak).
     """
     out_tum = Path(out_tum)
     out_tum.parent.mkdir(parents=True, exist_ok=True)
@@ -73,6 +77,12 @@ def run_with_metrics(
         cmd += ["--imu", str(imu_csv)]
     if scan_csv is not None:
         cmd += ["--scan", str(scan_csv)]
+    if bag is not None:
+        cmd += ["--bag", str(bag)]
+        if gyro_topic is not None:
+            cmd += ["--gyro-topic", gyro_topic, "--accel-topic", accel_topic]
+        if scan_topic is not None:
+            cmd += ["--scan-topic", scan_topic]
     if init_pose_tum is not None:
         cmd += ["--init-pose-from-tum", str(init_pose_tum)]
 

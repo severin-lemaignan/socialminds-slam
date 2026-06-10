@@ -37,6 +37,7 @@ slam-baseline = { path = "crates/slam-baseline" }
 slam-gtsam-sys = { path = "crates/slam-gtsam-sys" }
 slam-backend = { path = "crates/slam-backend" }
 slam-frontend-scan = { path = "crates/slam-frontend-scan" }
+slam-datasets = { path = "crates/slam-datasets" }
 
 [profile.release]
 lto = "thin"
