@@ -95,6 +95,20 @@ struct Args {
     #[arg(long, value_name = "TOPIC", requires = "bag")]
     scan_topic: Option<String>,
 
+    /// Depth `sensor_msgs/Image` topic to stream from `--bag` as back-projected point
+    /// clouds (M4 RGB-D). Use the aligned depth stream when available.
+    #[arg(long, value_name = "TOPIC", requires = "bag")]
+    depth_topic: Option<String>,
+
+    /// `CameraInfo` topic carrying the depth stream's intrinsics (ADR 0009). Defaults
+    /// to the sibling of `--depth-topic` (`…/image_raw` → `…/camera_info`).
+    #[arg(long, value_name = "TOPIC", requires = "depth_topic")]
+    camera_info_topic: Option<String>,
+
+    /// Keep every Nth depth frame (30 fps is redundant at ≤ 2 m/s).
+    #[arg(long, value_name = "N", default_value_t = 3)]
+    depth_every: usize,
+
     /// Output TUM trajectory file. Defaults to stdout.
     #[arg(long, value_name = "FILE")]
     out: Option<PathBuf>,
@@ -173,6 +187,7 @@ type ScanHook<'a> = &'a mut dyn FnMut(&LaserScan2D, &slam_types::StampedPose);
 enum Event<'a> {
     Imu(&'a ImuSample),
     Scan(&'a LaserScan2D),
+    Cloud(&'a slam_types::PointCloud),
 }
 
 impl Event<'_> {
@@ -180,29 +195,25 @@ impl Event<'_> {
         match self {
             Event::Imu(s) => s.stamp,
             Event::Scan(s) => s.stamp,
+            Event::Cloud(c) => c.stamp,
         }
     }
 }
 
 /// Merge the input streams into one stamp-ordered event sequence (stable two-pointer:
 /// equal stamps deliver IMU first, so inertial state is current when a scan lands).
-fn merged_events<'a>(imu: &'a [ImuSample], scans: &'a [LaserScan2D]) -> Vec<Event<'a>> {
-    let mut events = Vec::with_capacity(imu.len() + scans.len());
-    let (mut i, mut s) = (0, 0);
-    while i < imu.len() || s < scans.len() {
-        let take_imu = match (imu.get(i), scans.get(s)) {
-            (Some(a), Some(b)) => a.stamp <= b.stamp,
-            (Some(_), None) => true,
-            _ => false,
-        };
-        if take_imu {
-            events.push(Event::Imu(&imu[i]));
-            i += 1;
-        } else {
-            events.push(Event::Scan(&scans[s]));
-            s += 1;
-        }
-    }
+fn merged_events<'a>(
+    imu: &'a [ImuSample],
+    scans: &'a [LaserScan2D],
+    clouds: &'a [slam_types::PointCloud],
+) -> Vec<Event<'a>> {
+    let mut events: Vec<Event<'a>> = Vec::with_capacity(imu.len() + scans.len() + clouds.len());
+    events.extend(imu.iter().map(Event::Imu));
+    events.extend(scans.iter().map(Event::Scan));
+    events.extend(clouds.iter().map(Event::Cloud));
+    // Stable: equal stamps keep IMU (pushed first) ahead of exteroceptive events, so
+    // inertial state is current when a scan/cloud lands.
+    events.sort_by_key(|e| e.stamp());
     events
 }
 
@@ -222,6 +233,7 @@ fn run_timed(
         match event {
             Event::Imu(sample) => system.process_imu(sample),
             Event::Scan(scan) => system.process_scan(scan),
+            Event::Cloud(cloud) => system.process_points(cloud),
         }
         let est = system.current_estimate();
         latencies.push(t0.elapsed().as_nanos() as u64);
@@ -285,11 +297,13 @@ fn resolve_frame(rig: &SensorRig, name: &str) -> Result<FrameId> {
 /// Stream the requested topics from a ROS1 bag in one pass, merging a split
 /// gyro/accel pair into a single 6-axis IMU stream when asked for. Scans are tagged
 /// with the frame their `header.frame_id` names when a rig is given.
-fn load_bag_inputs(
-    bag: &Path,
-    args: &Args,
-    rig: Option<&SensorRig>,
-) -> Result<(Vec<ImuSample>, Vec<LaserScan2D>)> {
+type BagInputs = (
+    Vec<ImuSample>,
+    Vec<LaserScan2D>,
+    Vec<slam_types::PointCloud>,
+);
+
+fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<BagInputs> {
     let imu_topics: Vec<&str> = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
         (Some(imu), None, None) => vec![imu],
         (None, Some(gyro), Some(accel)) => vec![gyro, accel],
@@ -328,6 +342,36 @@ fn load_bag_inputs(
             }
         }
     }
+    let mut clouds = Vec::new();
+    if let Some(depth_topic) = &args.depth_topic {
+        let info_topic = args.camera_info_topic.clone().unwrap_or_else(|| {
+            // RealSense layout: …/image_raw → …/camera_info.
+            match depth_topic.rfind('/') {
+                Some(i) => format!("{}/camera_info", &depth_topic[..i]),
+                None => format!("{depth_topic}/camera_info"),
+            }
+        });
+        let (mut cs, frame_id) = slam_datasets::read_depth_clouds(
+            bag,
+            depth_topic,
+            &info_topic,
+            &slam_datasets::DepthConfig::default(),
+            args.depth_every,
+        )
+        .with_context(|| format!("reading depth from {depth_topic} / {info_topic}"))?;
+        if let Some(rig) = rig {
+            let frame = resolve_frame(rig, &frame_id)?;
+            for c in &mut cs {
+                c.frame = frame;
+            }
+        }
+        eprintln!(
+            "slam-replay: {} depth clouds from {depth_topic} (frame {frame_id:?}, every {}th)",
+            cs.len(),
+            args.depth_every.max(1),
+        );
+        clouds = cs;
+    }
     let scans = match &args.scan_topic {
         Some(topic) => {
             let mut scans = streams.scans.remove(topic.as_str()).unwrap_or_default();
@@ -347,7 +391,7 @@ fn load_bag_inputs(
         }
         None => Vec::new(),
     };
-    Ok((imu, scans))
+    Ok((imu, scans, clouds))
 }
 
 /// Split a `[FRAME=]FILE` CSV spec and resolve the frame against the rig.
@@ -445,12 +489,13 @@ fn main() -> Result<()> {
         (None, false) => None,
     };
 
-    let (imu, scans): (Vec<ImuSample>, Vec<LaserScan2D>) = if let Some(bag) = &args.bag {
+    let (imu, scans, clouds): BagInputs = if let Some(bag) = &args.bag {
         load_bag_inputs(bag, &args, rig.as_ref())?
     } else {
         (
             load_imu_csvs(&args.imu, rig.as_ref())?,
             load_scan_csvs(&args.scan, rig.as_ref())?,
+            Vec::new(),
         )
     };
 
@@ -459,8 +504,13 @@ fn main() -> Result<()> {
         System::Stationary | System::DeadReckoning if imu.is_empty() => {
             bail!("this system consumes IMU data: pass --imu, or --bag with IMU topics")
         }
-        System::ScanMatching | System::ScanMatching3d if scans.is_empty() => {
+        System::ScanMatching if scans.is_empty() => {
             bail!("scan-matching consumes laser scans: pass --scan, or --bag with --scan-topic")
+        }
+        System::ScanMatching3d if scans.is_empty() && clouds.is_empty() => {
+            bail!(
+                "scan-matching-3d consumes scans and/or depth clouds: pass --scan, or                  --bag with --scan-topic / --depth-topic"
+            )
         }
         _ => {}
     }
@@ -566,7 +616,7 @@ fn main() -> Result<()> {
         None => None,
     };
 
-    let events = merged_events(&imu, &scans);
+    let events = merged_events(&imu, &scans, &clouds);
     let (traj, latencies, wall) = run_timed(engine.as_dyn(), &events, on_scan);
 
     if let Engine::ScanToMap(odo) = &engine {

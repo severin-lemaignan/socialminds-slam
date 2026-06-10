@@ -106,6 +106,16 @@ impl LaserScan2D {
     }
 }
 
+/// A 3D point cloud in a sensor frame — e.g. a back-projected, downsampled RGB-D depth
+/// frame (the M4 front-end). Points are finite and range-clipped at ingest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PointCloud {
+    pub stamp: Stamp,
+    /// The sensor frame the points are expressed in ([`FrameId::BASE`] when untagged).
+    pub frame: FrameId,
+    pub points: Vec<Vec3>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

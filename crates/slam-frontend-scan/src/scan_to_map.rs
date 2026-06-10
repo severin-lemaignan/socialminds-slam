@@ -51,6 +51,10 @@ pub struct ScanToMapConfig {
     /// and gives passing people hundreds of chances to become ghosts.
     pub integrate_translation: f64,
     pub integrate_rotation: f64,
+    /// Cap on cloud points used per registration solve (deterministic subsample) —
+    /// accuracy saturates long before a full VGA back-projection's 6 k points, and the
+    /// trilinear sampling cost is linear in points.
+    pub max_registration_points: usize,
     /// Travel distance (m) before a fresh submap is started.
     pub submap_extent: f64,
     /// Scans integrated into both maps after a submap hand-over.
@@ -91,6 +95,7 @@ impl Default for ScanToMapConfig {
             attitude: AttitudeConfig::default(),
             integrate_translation: 0.1,
             integrate_rotation: 0.1,
+            max_registration_points: 1500,
             submap_extent: 20.0,
             submap_overlap_scans: 40,
             loop_radius: 12.0,
@@ -150,6 +155,9 @@ pub struct ScanToMapOdometry {
     /// Current base pose in the odometry (anchor-relative, gravity-aligned) frame.
     current: Se2,
     last_motion: Se2,
+    /// Time the last motion covered (s) — events arrive at heterogeneous rates
+    /// (40 Hz scans interleaving ~10 Hz clouds), so prediction must scale by dt.
+    last_motion_dt: f64,
     last_stamp: Option<Stamp>,
     stats: ScanOdometryStats,
     /// Reused buffers (hot path: no steady-state allocation).
@@ -190,6 +198,7 @@ impl ScanToMapOdometry {
             last_integrated: None,
             current: Se2::identity(),
             last_motion: Se2::identity(),
+            last_motion_dt: 0.0,
             last_stamp: None,
             stats: ScanOdometryStats::default(),
             lifted: Vec::new(),
@@ -310,9 +319,12 @@ impl ScanToMapOdometry {
         (transform, inlier_fraction, weak)
     }
 
-    /// Fuse the lifted scan into the active maps at `pose`: full 3D into the map
-    /// product, floor-gated gravity-plane projection into the registration field.
-    fn integrate(&mut self, pose: Se2, sensor_origin_base: Vec3) {
+    /// Fuse the lifted points into the active maps at `pose`: full 3D into the map
+    /// product; the floor-gated gravity-plane projection into the 2D registration
+    /// field only for planar scans (`update_reg`) — depth clouds see geometry at every
+    /// height (tables, chairs, people) that the lidar's slice never crosses, and
+    /// flattening it would poison the scan matcher's world.
+    fn integrate(&mut self, pose: Se2, sensor_origin_base: Vec3, update_reg: bool) {
         let origin = Self::apply_planar(&pose, sensor_origin_base);
         self.world.clear();
         self.world
@@ -322,21 +334,24 @@ impl ScanToMapOdometry {
             prev.integrate_points(origin, &self.world);
         }
 
-        let gate_floor = self.attitude.is_initialized()
-            && self.attitude.tilt().rotate(sensor_origin_base).z > 2.0 * self.cfg.floor_clearance;
-        let z_min = self.cfg.floor_clearance;
-        let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
-        self.world.clear();
-        self.world.extend(self.lifted.iter().filter_map(|&p| {
-            if gate_floor && p.z < z_min {
-                return None;
+        if update_reg {
+            let gate_floor = self.attitude.is_initialized()
+                && self.attitude.tilt().rotate(sensor_origin_base).z
+                    > 2.0 * self.cfg.floor_clearance;
+            let z_min = self.cfg.floor_clearance;
+            let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
+            self.world.clear();
+            self.world.extend(self.lifted.iter().filter_map(|&p| {
+                if gate_floor && p.z < z_min {
+                    return None;
+                }
+                let q = Self::apply_planar(&pose, p);
+                Some(Vec3::new(q.x, q.y, 0.0))
+            }));
+            self.reg.integrate_points(flat_origin, &self.world);
+            if let Some(prev) = &mut self.prev_reg {
+                prev.integrate_points(flat_origin, &self.world);
             }
-            let q = Self::apply_planar(&pose, p);
-            Some(Vec3::new(q.x, q.y, 0.0))
-        }));
-        self.reg.integrate_points(flat_origin, &self.world);
-        if let Some(prev) = &mut self.prev_reg {
-            prev.integrate_points(flat_origin, &self.world);
         }
 
         if self.prev_map.is_some() {
@@ -369,6 +384,146 @@ impl ScanToMapOdometry {
     /// Verified loop closures detected so far (the pose-graph's future edges).
     pub fn loop_closures(&self) -> &[LoopClosure] {
         &self.loops
+    }
+
+    /// Shared post-registration tail: accept/coast, advance the motion model, run the
+    /// keyframe-diet integration, loop closure and submap hand-over.
+    fn apply_registration(
+        &mut self,
+        stamp: Stamp,
+        sensor_origin: Vec3,
+        predicted: Se2,
+        (mut pose, inliers, weak): (Se2, f64, Option<slam_types::Vec2>),
+        update_reg: bool,
+    ) {
+        let previous = self.current;
+        if inliers >= self.cfg.min_inlier_fraction {
+            if let Some(dir) = weak {
+                // Unobservable direction (corridor): take the prediction's component.
+                let slip = dir.x * (predicted.x - pose.x) + dir.y * (predicted.y - pose.y);
+                pose = Se2::new(pose.x + dir.x * slip, pose.y + dir.y * slip, pose.theta);
+                self.stats.degenerate += 1;
+            }
+            self.current = pose;
+            self.stats.matched += 1;
+        } else {
+            // Unregistrable (dynamics, occlusion, empty model): coast on prediction.
+            self.current = predicted;
+            self.stats.coasted += 1;
+        }
+        self.last_motion = previous.inverse().compose(&self.current);
+        self.last_motion_dt = self
+            .last_stamp
+            .map_or(0.0, |prev| (stamp - prev).as_seconds());
+        self.submap_travel += self.last_motion.translation_norm();
+        self.last_stamp = Some(stamp);
+
+        let due = match self.last_integrated {
+            None => true,
+            Some(li) => {
+                let d = li.inverse().compose(&self.current);
+                d.translation_norm() > self.cfg.integrate_translation
+                    || d.theta.abs() > self.cfg.integrate_rotation
+            }
+        };
+        if due {
+            if !self.frozen.is_empty() {
+                self.try_loop_closure();
+            }
+            self.integrate(self.current, sensor_origin, update_reg);
+            self.last_integrated = Some(self.current);
+            self.maybe_spawn_submap();
+        }
+    }
+
+    /// Constant-velocity prediction, scaled to the actual time since the last event
+    /// (mixed-rate streams make a fixed per-event step model wrong).
+    fn predict(&self, stamp: Stamp) -> Se2 {
+        let dt = self
+            .last_stamp
+            .map_or(0.0, |prev| (stamp - prev).as_seconds());
+        if self.last_motion_dt <= 1e-6 || dt <= 0.0 {
+            return self.current;
+        }
+        let k = (dt / self.last_motion_dt).clamp(0.0, 4.0);
+        self.current.compose(&Se2::new(
+            self.last_motion.x * k,
+            self.last_motion.y * k,
+            self.last_motion.theta * k,
+        ))
+    }
+
+    /// Cloud points → tilt-compensated base frame (the cloud analogue of `lift_scan`).
+    fn lift_cloud(&mut self, cloud: &slam_types::PointCloud, t_base_sensor: &Pose) {
+        self.lifted.clear();
+        let tilt: Rotation = self.attitude.tilt();
+        let tilted = self.attitude.is_initialized();
+        self.lifted.extend(cloud.points.iter().map(|&p| {
+            let p_base = t_base_sensor.transform_point(p);
+            if tilted {
+                tilt.rotate(p_base)
+            } else {
+                p_base
+            }
+        }));
+    }
+
+    /// 3-DoF Gauss-Newton against the **3D** field (full trilinear): the depth path.
+    /// Floor points contribute near-zero planar Jacobians (vertical gradients) and are
+    /// kept — they are structure, and they cannot bias an (x, y, yaw) solve.
+    fn register_3d(&mut self, initial: Se2) -> (Se2, f64, Option<slam_types::Vec2>) {
+        let map: &dyn TsdfMap = match &self.prev_map {
+            Some(prev) => prev,
+            None => &self.map,
+        };
+        let band = self.cfg.tsdf.truncation * 0.9;
+        let mut transform = initial;
+        let mut inlier_fraction = 0.0;
+        let mut h_translation = [0.0; 3];
+        // Deterministic subsample: the solve saturates well below a full cloud.
+        let stride = (self.lifted.len() / self.cfg.max_registration_points).max(1);
+
+        for _ in 0..self.cfg.max_iterations {
+            self.world.clear();
+            self.world.extend(
+                self.lifted
+                    .iter()
+                    .step_by(stride)
+                    .map(|&p| Self::apply_planar(&transform, p)),
+            );
+            map.sample_batch(&self.world, &mut self.samples);
+
+            let mut h = nalgebra::Matrix3::<f64>::zeros();
+            let mut g = nalgebra::Vector3::<f64>::zeros();
+            let mut used = 0usize;
+            for (q, s) in self.world.iter().zip(self.samples.iter()) {
+                let Some(s) = s else { continue };
+                if s.sdf.abs() > band {
+                    continue;
+                }
+                let (gx, gy) = (s.gradient.x, s.gradient.y);
+                let jac = nalgebra::Vector3::new(gx, gy, gx * -q.y + gy * q.x);
+                h += jac * jac.transpose();
+                g += jac * s.sdf;
+                used += 1;
+            }
+            inlier_fraction = used as f64 / self.world.len().max(1) as f64;
+            if used < self.cfg.min_valid_points {
+                return (transform, inlier_fraction, None);
+            }
+            h_translation = [h[(0, 0)], h[(0, 1)], h[(1, 1)]];
+            let Some(delta) = h.cholesky().map(|ch| ch.solve(&(-g))) else {
+                return (transform, 0.0, None);
+            };
+            transform = Se2::new(delta.x, delta.y, delta.z).compose(&transform);
+            if delta.x.hypot(delta.y) < self.cfg.translation_epsilon
+                && delta.z.abs() < self.cfg.rotation_epsilon
+            {
+                break;
+            }
+        }
+        let weak = weak_translation_direction(h_translation, self.cfg.degeneracy_eigenvalue_ratio);
+        (transform, inlier_fraction, weak)
     }
 
     /// Attempt loop closure against frozen submaps near the current pose: a seed-grid
@@ -506,52 +661,46 @@ impl SlamSystem for ScanToMapOdometry {
         }
         let sensor_origin = self.attitude.tilt().rotate(extrinsic.translation());
 
-        // First scan of the run: the map is empty — seed it.
+        // First measurement of the run: the map is empty — seed it.
         if self.last_stamp.is_none() {
             self.last_stamp = Some(scan.stamp);
-            self.integrate(self.current, sensor_origin);
+            self.integrate(self.current, sensor_origin, true);
             self.last_integrated = Some(self.current);
             return;
         }
 
-        let predicted = self.current.compose(&self.last_motion);
-        let (mut pose, inliers, weak) = self.register(predicted, sensor_origin.z);
+        let predicted = self.predict(scan.stamp);
+        let result = self.register(predicted, sensor_origin.z);
+        self.apply_registration(scan.stamp, sensor_origin, predicted, result, true);
+    }
 
-        let previous = self.current;
-        if inliers >= self.cfg.min_inlier_fraction {
-            if let Some(dir) = weak {
-                // Unobservable direction (corridor): take the prediction's component.
-                let slip = dir.x * (predicted.x - pose.x) + dir.y * (predicted.y - pose.y);
-                pose = Se2::new(pose.x + dir.x * slip, pose.y + dir.y * slip, pose.theta);
-                self.stats.degenerate += 1;
-            }
-            self.current = pose;
-            self.stats.matched += 1;
-        } else {
-            // Unregistrable (dynamics, occlusion, empty model): coast on prediction.
-            self.current = predicted;
-            self.stats.coasted += 1;
-        }
-        self.last_motion = previous.inverse().compose(&self.current);
-        self.submap_travel += self.last_motion.translation_norm();
-        self.last_stamp = Some(scan.stamp);
-
-        let due = match self.last_integrated {
-            None => true,
-            Some(li) => {
-                let d = li.inverse().compose(&self.current);
-                d.translation_norm() > self.cfg.integrate_translation
-                    || d.theta.abs() > self.cfg.integrate_rotation
-            }
+    /// Ingest one back-projected RGB-D depth cloud (M4): lifted like a scan, but
+    /// registered against the **3D** field with full trilinear sampling — the camera
+    /// observes true 2D surfaces in 3D, so no gravity-plane projection is needed.
+    /// Both modalities correct the one shared pose and fuse into the same submap.
+    fn process_points(&mut self, cloud: &slam_types::PointCloud) {
+        self.stats.scans += 1;
+        let Some(extrinsic) = self.extrinsic(cloud.frame) else {
+            self.stats.skipped += 1;
+            return;
         };
-        if due {
-            if !self.frozen.is_empty() {
-                self.try_loop_closure();
-            }
-            self.integrate(self.current, sensor_origin);
-            self.last_integrated = Some(self.current);
-            self.maybe_spawn_submap();
+        self.lift_cloud(cloud, &extrinsic);
+        if self.lifted.len() < self.cfg.min_valid_points {
+            self.stats.skipped += 1;
+            return;
         }
+        let sensor_origin = self.attitude.tilt().rotate(extrinsic.translation());
+
+        if self.last_stamp.is_none() {
+            self.last_stamp = Some(cloud.stamp);
+            self.integrate(self.current, sensor_origin, false);
+            self.last_integrated = Some(self.current);
+            return;
+        }
+
+        let predicted = self.predict(cloud.stamp);
+        let result = self.register_3d(predicted);
+        self.apply_registration(cloud.stamp, sensor_origin, predicted, result, false);
     }
 
     fn current_estimate(&self) -> Option<StampedPose> {

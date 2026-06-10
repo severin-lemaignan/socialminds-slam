@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bag;
+mod depth_msg;
 mod imu_msg;
 mod scan_msg;
 mod tf_msg;
@@ -21,9 +22,10 @@ mod tf_msg;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use slam_types::{ImuSample, LaserScan2D};
+use slam_types::{ImuSample, LaserScan2D, PointCloud};
 
 use bag::BagFile;
+pub use depth_msg::{parse_camera_info, parse_depth_image, DepthConfig, Intrinsics};
 pub use imu_msg::parse_imu;
 pub use scan_msg::parse_scan;
 pub use tf_msg::{parse_tf_message, StaticTransform};
@@ -253,6 +255,88 @@ pub fn merge_split_imu(gyro: &[ImuSample], accel: &[ImuSample]) -> Vec<ImuSample
         ));
     }
     out
+}
+
+/// Read a depth-image stream as back-projected point clouds, in one pass.
+///
+/// `info_topic` is the `CameraInfo` riding alongside `depth_topic` (ADR 0009:
+/// intrinsics travel with the data). Frames are decimated to every `every_nth`-th
+/// image *before* decoding — depth at 30 fps is redundant for a ≤ 2 m/s base, and
+/// skipping early keeps a 10-minute bag's clouds in memory. Returns the time-sorted
+/// clouds + the depth stream's `header.frame_id`.
+pub fn read_depth_clouds<P: AsRef<Path>>(
+    path: P,
+    depth_topic: &str,
+    info_topic: &str,
+    cfg: &DepthConfig,
+    every_nth: usize,
+) -> Result<(Vec<PointCloud>, String), BagError> {
+    let mut bag = BagFile::open(path)?;
+    let conns = connection_map(&bag);
+    let find = |topic: &str, ty: &str| -> Result<Vec<u32>, BagError> {
+        let ids: Vec<u32> = conns
+            .iter()
+            .filter(|(_, (t, tp))| t == topic && tp == ty)
+            .map(|(&id, _)| id)
+            .collect();
+        if ids.is_empty() {
+            return Err(BagError::TopicNotFound(topic.to_string(), "sensor_msgs"));
+        }
+        Ok(ids)
+    };
+    let depth_ids: BTreeSet<u32> = find(depth_topic, "sensor_msgs/Image")?
+        .into_iter()
+        .collect();
+    let info_ids: BTreeSet<u32> = find(info_topic, "sensor_msgs/CameraInfo")?
+        .into_iter()
+        .collect();
+
+    let wanted: BTreeSet<u32> = depth_ids.union(&info_ids).copied().collect();
+    let mut intrinsics: Option<Intrinsics> = None;
+    let mut pending: Vec<Vec<u8>> = Vec::new(); // depth frames seen before the first info
+    let mut clouds: Vec<PointCloud> = Vec::new();
+    let mut frame_id = String::new();
+    let mut seen = 0usize;
+    let every = every_nth.max(1);
+
+    bag.for_each_message(&wanted, |conn, data| {
+        if info_ids.contains(&conn) {
+            if intrinsics.is_none() {
+                let (k, _frame) = parse_camera_info(data)?;
+                intrinsics = Some(k);
+                for raw in pending.drain(..) {
+                    let (cloud, f) = parse_depth_image(&raw, &k, cfg)?;
+                    frame_id = f;
+                    clouds.push(cloud);
+                }
+            }
+            return Ok(());
+        }
+        // A depth frame.
+        if !seen.is_multiple_of(every) {
+            seen += 1;
+            return Ok(());
+        }
+        seen += 1;
+        match &intrinsics {
+            Some(k) => {
+                let (cloud, f) = parse_depth_image(data, k, cfg)?;
+                frame_id = f;
+                clouds.push(cloud);
+            }
+            None => {
+                if pending.len() < 64 {
+                    pending.push(data.to_vec());
+                }
+            }
+        }
+        Ok(())
+    })?;
+    if intrinsics.is_none() {
+        return Err(BagError::Format("no CameraInfo message on the info topic"));
+    }
+    clouds.sort_by_key(|c| c.stamp);
+    Ok((clouds, frame_id))
 }
 
 /// Read the rigid sensor extrinsics a bag carries on `/tf_static` (ADR 0009: the
