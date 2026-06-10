@@ -44,7 +44,7 @@ fn ray_segment(origin: Vec2, dir: Vec2, a: Vec2, b: Vec2) -> Option<f64> {
     }
     let w = a - origin;
     let t = (w.x * (-v.y) - w.y * (-v.x)) / denom; // along the ray
-    let u = (dir.x * w.y - dir.y * w.x) / -denom; // along the segment
+    let u = (dir.x * w.y - dir.y * w.x) / denom; // along the segment
     (t > 1e-9 && (0.0..=1.0).contains(&u)).then_some(t)
 }
 
@@ -85,6 +85,106 @@ pub fn simulate_scan_at(
 /// Simulate one full-circle 360-beam revolution from a base-frame sensor pose.
 pub fn simulate_scan(pose: &Se2, stamp_s: f64, segments: &[(Vec2, Vec2)]) -> LaserScan2D {
     simulate_scan_at(pose, stamp_s, segments, 2.0 * PI, 360, FrameId::BASE)
+}
+
+// ---------------------------------------------------------------------------------
+// 2.5D world: finite-height walls + a floor plane, scanned by a *tilted* 3D sensor
+// (ADR 0010's noise scenario: the scan plane is not horizontal under acceleration).
+// ---------------------------------------------------------------------------------
+
+use slam_types::{Pose, Rotation, Vec3};
+
+/// Vertical wall rectangle: the segment `(a, b)` extruded from z = 0 to `height`.
+pub struct Wall {
+    pub a: Vec2,
+    pub b: Vec2,
+    pub height: f64,
+}
+
+/// The standard room as a 2.5D world: 4 m outer walls, a deliberately *low* (0.8 m)
+/// pillar — beams that dip under tilt land on the floor or skim over it, which is
+/// exactly the failure mode planar matching cannot represent.
+pub fn world_25d() -> Vec<Wall> {
+    world_segments()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (a, b))| Wall {
+            a,
+            b,
+            height: if i < 4 { 4.0 } else { 0.8 },
+        })
+        .collect()
+}
+
+/// Nearest hit of the 3D ray `origin + t·dir` against walls and the z = 0 floor.
+fn ray_world_25d(origin: Vec3, dir: Vec3, walls: &[Wall]) -> f64 {
+    let mut best = f64::INFINITY;
+    if dir.z < -1e-12 {
+        best = best.min(-origin.z / dir.z); // floor
+    }
+    let o2 = Vec2::new(origin.x, origin.y);
+    let d2 = Vec2::new(dir.x, dir.y);
+    for w in walls {
+        if let Some(t) = ray_segment(o2, d2, w.a, w.b) {
+            let z = origin.z + t * dir.z;
+            if (0.0..=w.height).contains(&z) {
+                best = best.min(t);
+            }
+        }
+    }
+    best
+}
+
+/// Deterministic per-beam range perturbation in `[-amplitude, amplitude]` (m), plus a
+/// dropout every `dropout_every`-th beam. A keyed sine hash — no RNG dependency, stable
+/// across runs (workflow/CI reproducibility).
+pub fn noisy_range(r: f64, beam: usize, scan_seq: u64, amplitude: f64) -> f64 {
+    let x = (beam as f64 * 12.9898 + scan_seq as f64 * 78.233).sin() * 43758.5453;
+    r + amplitude * 2.0 * (x - x.floor() - 0.5)
+}
+
+/// Simulate one revolution from a full 3D sensor pose (`t_world_sensor`): beams sweep
+/// the sensor's (tilted) xy-plane. `noise` of `(amplitude_m, scan_seq)` perturbs ranges
+/// and drops every 50th beam — the "noisy" half of the ADR 0010 test-data requirement.
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_scan_25d(
+    t_world_sensor: &Pose,
+    stamp_s: f64,
+    walls: &[Wall],
+    fov: f64,
+    beams: usize,
+    frame: FrameId,
+    noise: Option<(f64, u64)>,
+) -> LaserScan2D {
+    let angle_min = -fov / 2.0;
+    let angle_increment = fov / beams as f64;
+    let origin = t_world_sensor.translation();
+    let rot: Rotation = t_world_sensor.rotation();
+    let ranges = (0..beams)
+        .map(|i| {
+            if let Some((_, seq)) = noise {
+                if (i + seq as usize).is_multiple_of(50) {
+                    return f32::INFINITY; // dropout
+                }
+            }
+            let angle = angle_min + i as f64 * angle_increment;
+            let dir = rot.rotate(Vec3::new(angle.cos(), angle.sin(), 0.0));
+            let r = ray_world_25d(origin, dir, walls);
+            match noise {
+                Some((amp, seq)) if r.is_finite() => noisy_range(r, i, seq, amp) as f32,
+                _ => r as f32,
+            }
+        })
+        .collect();
+    LaserScan2D {
+        stamp: Stamp::from_seconds(stamp_s),
+        frame,
+        angle_min,
+        angle_increment,
+        range_min: 0.05,
+        range_max: 30.0,
+        ranges,
+    }
 }
 
 /// (translation error (m), |yaw error| (rad)) of an SE(3) estimate vs a planar truth.

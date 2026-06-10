@@ -306,17 +306,13 @@ fn load_scan_csvs(specs: &[String], rig: Option<&SensorRig>) -> Result<Vec<Laser
     Ok(scans)
 }
 
-/// The rig's planar extrinsics table for the scan front-end, warning on lidar frames
-/// mounted visibly out of the base's motion plane.
-fn planar_extrinsics_table(rig: &SensorRig, used: &[FrameId]) -> Vec<Se2> {
+/// The rig's SE(3) extrinsics table for the scan front-end, warning on lidar frames
+/// mounted visibly out of the base's motion plane (the front-end models the lidar as
+/// scanning that plane; mounting tilt is not yet compensated — only dynamic IMU tilt).
+fn extrinsics_table(rig: &SensorRig, used: &[FrameId]) -> Vec<Pose> {
     const PLANARITY_WARN_RAD: f64 = 0.017; // ≈ 1°
-    let table: Vec<(Se2, f64)> = rig
-        .extrinsics()
-        .iter()
-        .map(Se2::planar_projection_of)
-        .collect();
     for &frame in used {
-        let (_, out_of_plane) = table[frame.0 as usize];
+        let (_, out_of_plane) = Se2::planar_projection_of(&rig.extrinsic(frame));
         if out_of_plane > PLANARITY_WARN_RAD {
             eprintln!(
                 "slam-replay: warning: lidar frame {:?} is mounted {:.1}° out of the base \
@@ -326,7 +322,7 @@ fn planar_extrinsics_table(rig: &SensorRig, used: &[FrameId]) -> Vec<Se2> {
             );
         }
     }
-    table.into_iter().map(|(se2, _)| se2).collect()
+    rig.extrinsics().to_vec()
 }
 
 fn main() -> Result<()> {
@@ -384,7 +380,7 @@ fn main() -> Result<()> {
                     let mut used: Vec<FrameId> = scans.iter().map(|s| s.frame).collect();
                     used.sort_unstable();
                     used.dedup();
-                    planar_extrinsics_table(rig, &used)
+                    extrinsics_table(rig, &used)
                 }
                 None => Vec::new(),
             };

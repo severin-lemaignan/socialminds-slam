@@ -22,12 +22,9 @@ fn mock_urdf() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dual_lidar.urdf")
 }
 
-/// The rig's planar extrinsics table, as the engine consumes it.
-fn planar_extrinsics(rig: &SensorRig) -> Vec<Se2> {
-    rig.extrinsics()
-        .iter()
-        .map(|p| Se2::planar_projection_of(p).0)
-        .collect()
+/// The planar pose of each rig frame, for *simulating* what its lidar sees.
+fn planar_of(rig: &SensorRig, frame: FrameId) -> Se2 {
+    Se2::planar_projection_of(&rig.extrinsic(frame)).0
 }
 
 /// Simulate the scan a lidar at `extrinsic` (planar `T_base_sensor`) takes from the
@@ -52,7 +49,7 @@ fn lidar_scan(
 
 /// Drive the arc with both lidars alternating; return the worst (dt, dyaw) and stats.
 fn drive(
-    extrinsics_table: Vec<Se2>,
+    extrinsics_table: Vec<slam_types::Pose>,
     true_extrinsics: [(FrameId, Se2); 2],
 ) -> (f64, f64, slam_frontend_scan::ScanOdometryStats) {
     let segments = world_segments();
@@ -91,10 +88,9 @@ fn dual_lidar_tracks_with_urdf_extrinsics() {
     let rig = SensorRig::from_urdf_file(mock_urdf(), "base_link").unwrap();
     let fl = rig.resolve("laser_front_left").unwrap();
     let rr = rig.resolve("laser_rear_right").unwrap();
-    let table = planar_extrinsics(&rig);
-    let truth_ext = [(fl, table[fl.0 as usize]), (rr, table[rr.0 as usize])];
+    let truth_ext = [(fl, planar_of(&rig, fl)), (rr, planar_of(&rig, rr))];
 
-    let (worst_dt, worst_dyaw, stats) = drive(table, truth_ext);
+    let (worst_dt, worst_dyaw, stats) = drive(rig.extrinsics().to_vec(), truth_ext);
 
     assert_eq!(stats.scans, 240);
     assert_eq!(stats.skipped, 0);
@@ -115,16 +111,18 @@ fn wrong_extrinsic_degrades_tracking() {
     let rig = SensorRig::from_urdf_file(mock_urdf(), "base_link").unwrap();
     let fl = rig.resolve("laser_front_left").unwrap();
     let rr = rig.resolve("laser_rear_right").unwrap();
-    let table = planar_extrinsics(&rig);
-    let truth_ext = [(fl, table[fl.0 as usize]), (rr, table[rr.0 as usize])];
+    let truth_ext = [(fl, planar_of(&rig, fl)), (rr, planar_of(&rig, rr))];
 
-    let (good_dt, _, _) = drive(table.clone(), truth_ext);
+    let (good_dt, _, _) = drive(rig.extrinsics().to_vec(), truth_ext);
 
     // Mis-calibrate the rear lidar by 8° of yaw: the world it reports is rotated
     // w.r.t. where the front lidar puts it, and the shared pose must suffer.
-    let mut bad_table = table;
-    let bad = &mut bad_table[rr.0 as usize];
-    *bad = Se2::new(bad.x, bad.y, bad.theta + 8.0_f64.to_radians());
+    let mut bad_table = rig.extrinsics().to_vec();
+    bad_table[rr.0 as usize] = bad_table[rr.0 as usize]
+        * slam_types::Pose::new(
+            slam_types::Rotation::from_rpy(0.0, 0.0, 8.0_f64.to_radians()),
+            slam_types::Vec3::zeros(),
+        );
 
     let (bad_dt, _, _) = drive(bad_table, truth_ext);
 
@@ -138,9 +136,11 @@ fn wrong_extrinsic_degrades_tracking() {
 #[test]
 fn scans_from_an_unknown_frame_are_skipped_not_guessed() {
     let rig = SensorRig::from_urdf_file(mock_urdf(), "base_link").unwrap();
-    let table = planar_extrinsics(&rig);
-    let mut odo =
-        ScanOdometry::with_extrinsics(Se2::identity().to_pose(), Default::default(), table);
+    let mut odo = ScanOdometry::with_extrinsics(
+        Se2::identity().to_pose(),
+        Default::default(),
+        rig.extrinsics().to_vec(),
+    );
 
     let segments = world_segments();
     let scan = simulate_scan_at(

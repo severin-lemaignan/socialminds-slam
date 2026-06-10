@@ -10,11 +10,20 @@
 //! every sensor corrects the *one shared base pose* — fusion happens through the common
 //! state. Keyframes are kept per sensor (matching always compares like FOV with like),
 //! a stepping stone towards the shared local map of ADR 0009.
+//!
+//! **3D body** (ADR 0010): the extrinsics are full SE(3) and the IMU's gravity tilt
+//! ([`AttitudeFilter`]) is applied when lifting beams, so a pitching/rolling base feeds
+//! the planar matcher gravity-aligned points instead of a distorted slice. Returns that
+//! land near the floor under tilt (the beam dipped) are gated out rather than matched
+//! as phantom walls.
 
 use std::collections::HashMap;
 
-use slam_types::{FrameId, LaserScan2D, Pose, SlamSystem, Stamp, StampedPose, Vec2};
+use slam_types::{
+    FrameId, LaserScan2D, Pose, Rotation, SlamSystem, Stamp, StampedPose, Vec2, Vec3,
+};
 
+use crate::attitude::{AttitudeConfig, AttitudeFilter};
 use crate::icp::{MatchConfig, ScanMatcher};
 use crate::se2::Se2;
 
@@ -30,6 +39,12 @@ pub struct ScanOdometryConfig {
     pub min_valid_points: usize,
     /// Matches keeping a smaller inlier fraction are treated as failures (coast).
     pub min_inlier_fraction: f64,
+    /// Attitude (gravity tilt) filter tuning; active once IMU samples arrive.
+    pub attitude: AttitudeConfig,
+    /// Lifted points lower than this above the floor (m, gravity frame, floor at the
+    /// base's z = 0) are floor hits of a dipped beam — gated out. Only applies when the
+    /// attitude is initialised *and* the sensor sits comfortably above the clearance.
+    pub floor_clearance: f64,
 }
 
 impl Default for ScanOdometryConfig {
@@ -40,6 +55,8 @@ impl Default for ScanOdometryConfig {
             keyframe_rotation: 0.3,
             min_valid_points: 50,
             min_inlier_fraction: 0.4,
+            attitude: AttitudeConfig::default(),
+            floor_clearance: 0.05,
         }
     }
 }
@@ -53,6 +70,8 @@ pub struct ScanOdometryStats {
     pub coasted: u64,
     pub skipped: u64,
     pub keyframes: u64,
+    /// Matches with an unobservable translation direction, filled from the prediction.
+    pub degenerate: u64,
 }
 
 struct Keyframe {
@@ -72,8 +91,10 @@ pub struct ScanOdometry {
     /// SE(3) anchor: planar odometry is composed on top of this (e.g. a ground-truth
     /// initial pose on benchmark sequences).
     base: Pose,
-    /// Planar `T_base_sensor` per [`FrameId`] index (empty = base-frame scans only).
-    extrinsics: Vec<Se2>,
+    /// SE(3) `T_base_sensor` per [`FrameId`] index (empty = base-frame scans only).
+    extrinsics: Vec<Pose>,
+    /// Gravity tilt from the IMU stream; identity until IMU samples arrive (ADR 0010).
+    attitude: AttitudeFilter,
     /// One keyframe per sensor frame: every sensor corrects the shared `current` pose,
     /// but matches against its own FOV's geometry.
     keyframes: HashMap<FrameId, Keyframe>,
@@ -97,15 +118,17 @@ impl ScanOdometry {
         Self::with_extrinsics(base, cfg, Vec::new())
     }
 
-    /// Multi-lidar odometry: `extrinsics[frame.0]` is the planar `T_base_sensor` of each
-    /// rig frame (see [`Se2::planar_projection_of`]). Scans tagged with a frame outside
-    /// the table are *skipped* (counted in [`ScanOdometryStats::skipped`]) — an untagged
+    /// Multi-lidar odometry: `extrinsics[frame.0]` is the SE(3) `T_base_sensor` of each
+    /// rig frame (`SensorRig::extrinsics`). Scans tagged with a frame outside the table
+    /// are *skipped* (counted in [`ScanOdometryStats::skipped`]) — an untagged
     /// ([`FrameId::BASE`]) scan against an empty table is the identity fast path.
-    pub fn with_extrinsics(base: Pose, cfg: ScanOdometryConfig, extrinsics: Vec<Se2>) -> Self {
+    pub fn with_extrinsics(base: Pose, cfg: ScanOdometryConfig, extrinsics: Vec<Pose>) -> Self {
+        let attitude = AttitudeFilter::new(cfg.attitude.clone());
         ScanOdometry {
             cfg,
             base,
             extrinsics,
+            attitude,
             keyframes: HashMap::new(),
             current: Se2::identity(),
             last_motion: Se2::identity(),
@@ -119,12 +142,40 @@ impl ScanOdometry {
         self.stats
     }
 
-    /// The planar extrinsic for `frame`, or `None` if the frame is unknown to the rig.
-    fn extrinsic(&self, frame: FrameId) -> Option<Se2> {
+    /// The SE(3) extrinsic for `frame`, or `None` if the frame is unknown to the rig.
+    fn extrinsic(&self, frame: FrameId) -> Option<Pose> {
         match self.extrinsics.get(frame.0 as usize) {
             Some(t) => Some(*t),
-            None if frame == FrameId::BASE => Some(Se2::identity()),
+            None if frame == FrameId::BASE => Some(Pose::identity()),
             None => None,
+        }
+    }
+
+    /// Lift the scan's beams into the gravity-aligned base frame: sensor plane → SE(3)
+    /// extrinsic → IMU tilt, then drop floor hits and project onto the motion plane.
+    /// This is where the 3D body model meets the planar matcher (ADR 0010).
+    fn lift_scan(&self, scan: &LaserScan2D, t_base_sensor: &Pose, out: &mut Vec<Vec2>) {
+        out.clear();
+        let tilt: Rotation = self.attitude.tilt();
+        let tilted = self.attitude.is_initialized();
+        // Gate floor hits only when tilt information exists and the sensor sits clearly
+        // above the clearance (a base-frame z=0 stream carries no height to gate on).
+        let sensor_z = tilt.rotate(t_base_sensor.translation()).z;
+        let gate_floor = tilted && sensor_z > 2.0 * self.cfg.floor_clearance;
+
+        for (i, &r) in scan.ranges.iter().enumerate() {
+            let r = r as f64;
+            if !r.is_finite() || r < scan.range_min || r > scan.range_max {
+                continue;
+            }
+            let angle = scan.angle_min + i as f64 * scan.angle_increment;
+            let p_sensor = Vec3::new(r * angle.cos(), r * angle.sin(), 0.0);
+            let p_base = t_base_sensor.transform_point(p_sensor);
+            let p = if tilted { tilt.rotate(p_base) } else { p_base };
+            if gate_floor && p.z < self.cfg.floor_clearance {
+                continue; // a dipped beam hit the floor: not wall geometry
+            }
+            out.push(Vec2::new(p.x, p.y));
         }
     }
 
@@ -145,6 +196,10 @@ impl SlamSystem for ScanOdometry {
         "scan_matching"
     }
 
+    fn process_imu(&mut self, sample: &slam_types::ImuSample) {
+        self.attitude.process(sample);
+    }
+
     fn process_scan(&mut self, scan: &LaserScan2D) {
         self.stats.scans += 1;
         let Some(extrinsic) = self.extrinsic(scan.frame) else {
@@ -152,19 +207,14 @@ impl SlamSystem for ScanOdometry {
             self.stats.skipped += 1;
             return;
         };
+        // Express the beams in the gravity-aligned base frame: the match below then
+        // estimates base motion directly, and all sensors correct the same pose state.
         let mut points = std::mem::take(&mut self.points_buf);
-        scan.points_into(&mut points);
+        self.lift_scan(scan, &extrinsic, &mut points);
         if points.len() < self.cfg.min_valid_points {
             self.stats.skipped += 1;
             self.points_buf = points;
             return; // estimate (and its stamp) unchanged: nothing was learned
-        }
-        // Express the beams in the base frame: the match below then estimates base
-        // motion directly, and all sensors correct the same pose state.
-        if scan.frame != FrameId::BASE {
-            for p in &mut points {
-                *p = extrinsic.apply(*p);
-            }
         }
 
         let Some(keyframe) = self.keyframes.get_mut(&scan.frame) else {
@@ -185,12 +235,25 @@ impl SlamSystem for ScanOdometry {
         let previous = self.current;
         match matched {
             Some(result) => {
-                // The match transform *is* the base pose in the keyframe frame.
-                self.current = keyframe.pose.compose(&result.transform);
+                // The match transform *is* the base pose in the keyframe frame — except
+                // along a degenerate direction (corridor axis), where the geometry
+                // measured nothing and the constant-velocity prediction must fill in.
+                let mut transform = result.transform;
+                if let Some(dir) = result.degenerate_direction {
+                    let slip =
+                        dir.x * (initial.x - transform.x) + dir.y * (initial.y - transform.y);
+                    transform = Se2::new(
+                        transform.x + dir.x * slip,
+                        transform.y + dir.y * slip,
+                        transform.theta,
+                    );
+                    self.stats.degenerate += 1;
+                }
+                self.current = keyframe.pose.compose(&transform);
                 self.stats.matched += 1;
 
-                if result.transform.translation_norm() > self.cfg.keyframe_translation
-                    || result.transform.theta.abs() > self.cfg.keyframe_rotation
+                if transform.translation_norm() > self.cfg.keyframe_translation
+                    || transform.theta.abs() > self.cfg.keyframe_rotation
                 {
                     self.adopt_keyframe(scan.frame, points);
                 } else {

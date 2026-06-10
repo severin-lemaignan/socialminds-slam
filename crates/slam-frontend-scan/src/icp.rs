@@ -26,6 +26,12 @@ pub struct MatchConfig {
     pub rotation_epsilon: f64,
     /// Give up when fewer surviving correspondences than this.
     pub min_correspondences: usize,
+    /// Translation observability gate: when the smaller eigenvalue of the 2×2
+    /// translation information block falls below this fraction of the larger one, the
+    /// solution along that eigenvector is unconstrained by the geometry (the corridor
+    /// case: all surviving normals near-parallel) and is reported in
+    /// [`MatchResult::degenerate_direction`] instead of being silently trusted.
+    pub degeneracy_eigenvalue_ratio: f64,
 }
 
 impl Default for MatchConfig {
@@ -37,6 +43,7 @@ impl Default for MatchConfig {
             translation_epsilon: 1e-6,
             rotation_epsilon: 1e-7,
             min_correspondences: 20,
+            degeneracy_eigenvalue_ratio: 0.02,
         }
     }
 }
@@ -54,6 +61,11 @@ pub struct MatchResult {
     pub inlier_fraction: f64,
     /// False when the iteration budget ran out before the step shrank below epsilon.
     pub converged: bool,
+    /// Unit direction (reference frame) along which translation was *unobservable*
+    /// (see [`MatchConfig::degeneracy_eigenvalue_ratio`]). The transform's component
+    /// along it is the solver's guess, not a measurement — callers must replace it
+    /// with their motion prior. `None` = fully constrained.
+    pub degenerate_direction: Option<Vec2>,
 }
 
 /// How many grid cells subdivide the correspondence gate.
@@ -276,6 +288,7 @@ impl ScanMatcher {
         let mut inlier_fraction = 0.0;
         let mut converged = false;
         let mut iterations = 0;
+        let mut h_translation = [0.0; 3]; // (h00, h01, h11) of the last iteration
 
         for iter in 0..cfg.max_iterations {
             iterations = iter + 1;
@@ -347,6 +360,7 @@ impl ScanMatcher {
             }
             mean_residual = abs_sum / keep as f64;
             inlier_fraction = keep as f64 / current.len() as f64;
+            h_translation = [h[(0, 0)], h[(0, 1)], h[(1, 1)]];
 
             let Some(delta) = h.cholesky().map(|ch| ch.solve(&(-g))) else {
                 return (corr, None);
@@ -371,9 +385,41 @@ impl ScanMatcher {
                 mean_residual,
                 inlier_fraction,
                 converged,
+                degenerate_direction: weak_translation_direction(
+                    h_translation,
+                    cfg.degeneracy_eigenvalue_ratio,
+                ),
             }),
         )
     }
+}
+
+/// Eigen-analysis of the symmetric 2×2 translation information block `(h00, h01, h11)`:
+/// the unit eigenvector of the smaller eigenvalue, when that eigenvalue is below
+/// `ratio` × the larger one (translation unobservable along it — e.g. a corridor's
+/// axis when every surviving normal faces the walls).
+fn weak_translation_direction([h00, h01, h11]: [f64; 3], ratio: f64) -> Option<Vec2> {
+    let half_trace = 0.5 * (h00 + h11);
+    let d = (0.25 * (h00 - h11).powi(2) + h01 * h01).sqrt();
+    let (lo, hi) = (half_trace - d, half_trace + d);
+    if lo > ratio * hi {
+        return None;
+    }
+    // Eigenvector for `lo`: rows of (H − lo·I) are orthogonal to it.
+    let v = if (h00 - lo).abs() > h01.abs() {
+        Vec2::new(-h01, h00 - lo)
+    } else if h01.abs() > 1e-300 {
+        Vec2::new(lo - h11, h01)
+    } else {
+        // Diagonal H: the weak axis is whichever diagonal entry is smaller.
+        if h00 <= h11 {
+            Vec2::new(1.0, 0.0)
+        } else {
+            Vec2::new(0.0, 1.0)
+        }
+    };
+    let n = v.norm();
+    (n > 0.0).then(|| v / n)
 }
 
 /// One-shot convenience over [`ScanMatcher`]: index `reference`, match once.
