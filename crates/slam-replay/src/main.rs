@@ -63,13 +63,13 @@ struct Args {
     #[arg(long, value_name = "FILE")]
     urdf: Option<PathBuf>,
 
-    /// The body frame the rig is anchored at (a URDF link name).
-    #[arg(
-        long,
-        value_name = "LINK",
-        default_value = "base_link",
-        requires = "urdf"
-    )]
+    /// Build the rig from the bag's own `/tf_static` (the recorded counterpart of the
+    /// URDF's fixed joints — ADR 0009). Needs `--bag`.
+    #[arg(long, requires = "bag", conflicts_with = "urdf")]
+    rig_from_bag: bool,
+
+    /// The body frame the rig is anchored at (a URDF link / tf frame name).
+    #[arg(long, value_name = "LINK", default_value = "base_link")]
     base_frame: String,
 
     /// ROS1 bag input: stream topics directly, no CSV extraction stage. Select streams
@@ -282,6 +282,7 @@ fn load_bag_inputs(
         Some(topic) => {
             let mut scans = streams.scans.remove(topic.as_str()).unwrap_or_default();
             if let Some(rig) = rig {
+                // (rig from --urdf or --rig-from-bag alike)
                 // The messages name their own frame (ADR 0009).
                 let frame_id = streams
                     .scan_frames
@@ -366,12 +367,32 @@ fn extrinsics_table(rig: &SensorRig, used: &[FrameId]) -> Vec<Pose> {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let rig = match &args.urdf {
-        Some(path) => Some(
+    let rig = match (&args.urdf, args.rig_from_bag) {
+        (Some(path), _) => Some(
             SensorRig::from_urdf_file(path, &args.base_frame)
                 .with_context(|| format!("building rig from {}", path.display()))?,
         ),
-        None => None,
+        (None, true) => {
+            let bag = args
+                .bag
+                .as_ref()
+                .expect("clap: --rig-from-bag requires --bag");
+            let tfs = slam_datasets::read_static_transforms(bag)
+                .with_context(|| format!("reading /tf_static from {}", bag.display()))?;
+            let edges: Vec<(String, String, Pose)> = tfs
+                .into_iter()
+                .map(|t| (t.parent, t.child, t.transform))
+                .collect();
+            let rig = SensorRig::from_transforms(&args.base_frame, &edges)
+                .context("building rig from the bag's /tf_static")?;
+            eprintln!(
+                "slam-replay: rig from /tf_static: {} frames around {:?}",
+                rig.len(),
+                args.base_frame
+            );
+            Some(rig)
+        }
+        (None, false) => None,
     };
 
     let (imu, scans): (Vec<ImuSample>, Vec<LaserScan2D>) = if let Some(bag) = &args.bag {

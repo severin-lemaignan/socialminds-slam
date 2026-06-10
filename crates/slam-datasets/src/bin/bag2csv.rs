@@ -71,10 +71,11 @@ fn main() -> Result<()> {
             std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         slam_types::write_imu(samples, std::io::BufWriter::new(file))?;
         eprintln!(
-            "slam-bag2csv: {} -> {} ({} samples)",
+            "slam-bag2csv: {} -> {} ({} samples, frame_id {:?})",
             topic,
             path.display(),
-            samples.len()
+            samples.len(),
+            streams.imu_frames.get(*topic).map_or("?", |f| f.as_str()),
         );
     }
     for (topic, path) in &scan {
@@ -83,10 +84,11 @@ fn main() -> Result<()> {
             std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
         slam_types::write_scans(scans, std::io::BufWriter::new(file))?;
         eprintln!(
-            "slam-bag2csv: {} -> {} ({} scans)",
+            "slam-bag2csv: {} -> {} ({} scans, frame_id {:?})",
             topic,
             path.display(),
-            scans.len()
+            scans.len(),
+            streams.scan_frames.get(*topic).map_or("?", |f| f.as_str()),
         );
     }
     Ok(())

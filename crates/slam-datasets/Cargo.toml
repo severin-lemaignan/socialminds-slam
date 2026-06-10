@@ -8,6 +8,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dev-dependencies]
+slam-rig.workspace = true
+
 [dependencies]
 slam-types.workspace = true
 # Chunk decompression for the in-house ROS1 bag reader (ADR 0008): chunks are

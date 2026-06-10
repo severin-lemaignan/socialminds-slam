@@ -16,6 +16,7 @@
 pub mod bag;
 mod imu_msg;
 mod scan_msg;
+mod tf_msg;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -25,6 +26,7 @@ use slam_types::{ImuSample, LaserScan2D};
 use bag::BagFile;
 pub use imu_msg::parse_imu;
 pub use scan_msg::parse_scan;
+pub use tf_msg::{parse_tf_message, StaticTransform};
 
 /// ROS message type string for IMU data.
 pub const IMU_MSG_TYPE: &str = "sensor_msgs/Imu";
@@ -251,6 +253,35 @@ pub fn merge_split_imu(gyro: &[ImuSample], accel: &[ImuSample]) -> Vec<ImuSample
         ));
     }
     out
+}
+
+/// Read the rigid sensor extrinsics a bag carries on `/tf_static` (ADR 0009: the
+/// recorded counterpart of the URDF's fixed joints). Every `tf2_msgs/TFMessage` on the
+/// topic is decoded; duplicate parent→child pairs keep the first occurrence.
+pub fn read_static_transforms<P: AsRef<Path>>(path: P) -> Result<Vec<StaticTransform>, BagError> {
+    let mut bag = BagFile::open(path)?;
+    let wanted: BTreeSet<u32> = bag
+        .connections()
+        .iter()
+        .filter(|c| c.topic == "/tf_static" && c.message_type == "tf2_msgs/TFMessage")
+        .map(|c| c.id)
+        .collect();
+    if wanted.is_empty() {
+        return Err(BagError::NoTopic("tf2_msgs/TFMessage (/tf_static)"));
+    }
+    let mut out: Vec<StaticTransform> = Vec::new();
+    bag.for_each_message(&wanted, |_, data| {
+        for tf in parse_tf_message(data)? {
+            if !out
+                .iter()
+                .any(|t| t.parent == tf.parent && t.child == tf.child)
+            {
+                out.push(tf);
+            }
+        }
+        Ok(())
+    })?;
+    Ok(out)
 }
 
 /// Read the IMU stream from a ROS1 bag, returning time-sorted samples.

@@ -15,9 +15,7 @@
 //! (stage 3); here submaps only bound memory and drift accumulation.
 
 use slam_map::{SdfSample, SparseTsdf, TsdfConfig, TsdfMap};
-use slam_types::{
-    FrameId, LaserScan2D, Pose, Rotation, SlamSystem, Stamp, StampedPose, Vec3,
-};
+use slam_types::{FrameId, LaserScan2D, Pose, Rotation, SlamSystem, Stamp, StampedPose, Vec3};
 
 use crate::attitude::{AttitudeConfig, AttitudeFilter};
 use crate::icp::weak_translation_direction;
@@ -95,12 +93,20 @@ pub struct ScanToMapOdometry {
     /// SE(3) `T_base_sensor` per [`FrameId`] index (empty = base-frame scans only).
     extrinsics: Vec<Pose>,
     attitude: AttitudeFilter,
-    /// The active submap (odometry frame) and where it was started.
+    /// The active 3D submap (odometry frame) — the map *product* (viz, reMap, RGB-D).
     map: SparseTsdf,
+    /// The active **registration field**: the same submap projected onto the gravity
+    /// plane (z = 0). A planar fan — even tilt-corrected — is a 1D curve through 3D
+    /// voxel space, so no 3D interpolation stencil is supportable by its samples; the
+    /// 3-DoF solve's natural substrate is the 2D projection, which the fan covers
+    /// densely. Floor hits are gated out before projection. RGB-D registration (true
+    /// 2D surfaces in 3D) will use the 3D field directly (ADR 0010).
+    reg: SparseTsdf,
     submap_birth: Se2,
-    /// Previous submap during the hand-over window: registration target while the new
-    /// map fills, integration target alongside it.
+    /// Previous submaps during the hand-over window: registration target while the new
+    /// maps fill, integration target alongside them.
     prev_map: Option<SparseTsdf>,
+    prev_reg: Option<SparseTsdf>,
     overlap_left: usize,
     /// Pose of the last map fusion (the integration keyframe diet).
     last_integrated: Option<Se2>,
@@ -128,14 +134,17 @@ impl ScanToMapOdometry {
     pub fn with_extrinsics(base: Pose, cfg: ScanToMapConfig, extrinsics: Vec<Pose>) -> Self {
         let attitude = AttitudeFilter::new(cfg.attitude.clone());
         let map = SparseTsdf::new(cfg.tsdf.clone());
+        let reg = SparseTsdf::new(cfg.tsdf.clone());
         ScanToMapOdometry {
             cfg,
             base,
             extrinsics,
             attitude,
             map,
+            reg,
             submap_birth: Se2::identity(),
             prev_map: None,
+            prev_reg: None,
             overlap_left: 0,
             last_integrated: None,
             current: Se2::identity(),
@@ -187,12 +196,13 @@ impl ScanToMapOdometry {
         Vec3::new(c * p.x - s * p.y + t.x, s * p.x + c * p.y + t.y, p.z)
     }
 
-    /// 3-DoF Gauss-Newton: minimise the TSDF value at the transformed points.
+    /// 3-DoF Gauss-Newton: minimise the registration-field value at the transformed,
+    /// gravity-plane-projected points.
     /// Returns (pose, inlier fraction, weak translation direction).
     fn register(&mut self, initial: Se2, sensor_z: f64) -> (Se2, f64, Option<slam_types::Vec2>) {
-        let map: &dyn TsdfMap = match &self.prev_map {
+        let map: &dyn TsdfMap = match &self.prev_reg {
             Some(prev) => prev,
-            None => &self.map,
+            None => &self.reg,
         };
         let band = self.cfg.tsdf.truncation * 0.9;
         // Floor residuals carry no planar information (see ScanToMapConfig); gate them
@@ -206,11 +216,13 @@ impl ScanToMapOdometry {
 
         for _ in 0..self.cfg.max_iterations {
             self.world.clear();
-            self.world.extend(
-                self.lifted
-                    .iter()
-                    .map(|&p| Self::apply_planar(&transform, p)),
-            );
+            self.world.extend(self.lifted.iter().filter_map(|&p| {
+                if gate_floor && p.z < z_min {
+                    return None; // floor hit: not wall geometry
+                }
+                let q = Self::apply_planar(&transform, p);
+                Some(Vec3::new(q.x, q.y, 0.0)) // gravity-plane projection
+            }));
             map.sample_batch(&self.world, &mut self.samples);
 
             // NOTE: no PLICP-style residual trimming here — measured on cafe1, it
@@ -223,7 +235,7 @@ impl ScanToMapOdometry {
             let mut used = 0usize;
             for (q, s) in self.world.iter().zip(self.samples.iter()) {
                 let Some(s) = s else { continue };
-                if s.sdf.abs() > band || (gate_floor && q.z < z_min) {
+                if s.sdf.abs() > band {
                     continue;
                 }
                 let (gx, gy) = (s.gradient.x, s.gradient.y);
@@ -252,7 +264,8 @@ impl ScanToMapOdometry {
         (transform, inlier_fraction, weak)
     }
 
-    /// Fuse the lifted scan into the active map(s) at `pose`.
+    /// Fuse the lifted scan into the active maps at `pose`: full 3D into the map
+    /// product, floor-gated gravity-plane projection into the registration field.
     fn integrate(&mut self, pose: Se2, sensor_origin_base: Vec3) {
         let origin = Self::apply_planar(&pose, sensor_origin_base);
         self.world.clear();
@@ -261,9 +274,30 @@ impl ScanToMapOdometry {
         self.map.integrate_points(origin, &self.world);
         if let Some(prev) = &mut self.prev_map {
             prev.integrate_points(origin, &self.world);
+        }
+
+        let gate_floor = self.attitude.is_initialized()
+            && self.attitude.tilt().rotate(sensor_origin_base).z > 2.0 * self.cfg.floor_clearance;
+        let z_min = self.cfg.floor_clearance;
+        let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
+        self.world.clear();
+        self.world.extend(self.lifted.iter().filter_map(|&p| {
+            if gate_floor && p.z < z_min {
+                return None;
+            }
+            let q = Self::apply_planar(&pose, p);
+            Some(Vec3::new(q.x, q.y, 0.0))
+        }));
+        self.reg.integrate_points(flat_origin, &self.world);
+        if let Some(prev) = &mut self.prev_reg {
+            prev.integrate_points(flat_origin, &self.world);
+        }
+
+        if self.prev_map.is_some() {
             self.overlap_left = self.overlap_left.saturating_sub(1);
             if self.overlap_left == 0 {
                 self.prev_map = None;
+                self.prev_reg = None;
             }
         }
     }
@@ -278,6 +312,8 @@ impl ScanToMapOdometry {
         if travelled > self.cfg.submap_extent && self.prev_map.is_none() {
             let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
             self.prev_map = Some(std::mem::replace(&mut self.map, fresh));
+            let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
+            self.prev_reg = Some(std::mem::replace(&mut self.reg, fresh));
             self.overlap_left = self.cfg.submap_overlap_scans;
             self.submap_birth = self.current;
             self.stats.keyframes += 1; // a submap hand-over is the new "keyframe" event

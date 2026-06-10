@@ -64,24 +64,51 @@ impl SensorRig {
         if !robot.links.iter().any(|l| l.name == base_frame) {
             return Err(RigError::BaseFrameMissing(base_frame.to_string()));
         }
+        let edges: Vec<(String, String, Pose)> = robot
+            .joints
+            .iter()
+            .filter(|j| j.joint_type == urdf_rs::JointType::Fixed)
+            .map(|j| {
+                (
+                    j.parent.link.clone(),
+                    j.child.link.clone(),
+                    urdf_pose(&j.origin),
+                )
+            })
+            .collect();
+        Self::from_edges(base_frame, &edges)
+    }
 
-        // Undirected adjacency over *fixed* joints: link → (neighbour, T_link_neighbour).
-        // Undirected so any link of the rigid assembly can serve as the base frame.
+    /// Build a rig from raw rigid parent→child transforms — e.g. a recorded
+    /// `/tf_static` stream, the bag-side counterpart of the URDF's fixed joints
+    /// (ADR 0009). `transforms` items are `(parent, child, T_parent_child)`.
+    pub fn from_transforms(
+        base_frame: &str,
+        transforms: &[(String, String, Pose)],
+    ) -> Result<Self, RigError> {
+        if !transforms
+            .iter()
+            .any(|(p, c, _)| p == base_frame || c == base_frame)
+        {
+            return Err(RigError::BaseFrameMissing(base_frame.to_string()));
+        }
+        Self::from_edges(base_frame, transforms)
+    }
+
+    fn from_edges(base_frame: &str, edges: &[(String, String, Pose)]) -> Result<Self, RigError> {
+        // Undirected adjacency: frame → (neighbour, T_frame_neighbour) — undirected so
+        // any frame of the rigid assembly can serve as the base.
         let mut adj: BTreeMap<&str, Vec<(&str, Pose)>> = BTreeMap::new();
-        for joint in &robot.joints {
-            if joint.joint_type != urdf_rs::JointType::Fixed {
-                continue;
-            }
-            let t = urdf_pose(&joint.origin);
-            adj.entry(joint.parent.link.as_str())
+        for (parent, child, t) in edges {
+            adj.entry(parent.as_str())
                 .or_default()
-                .push((joint.child.link.as_str(), t));
-            adj.entry(joint.child.link.as_str())
+                .push((child.as_str(), *t));
+            adj.entry(child.as_str())
                 .or_default()
-                .push((joint.parent.link.as_str(), t.inverse()));
+                .push((parent.as_str(), t.inverse()));
         }
 
-        // BFS from the base over the rigid assembly, composing T_base_link as we go.
+        // BFS from the base over the rigid assembly, composing T_base_frame as we go.
         let mut names = vec![base_frame.to_string()];
         let mut extrinsics = vec![Pose::identity()];
         let mut queue = std::collections::VecDeque::from([(base_frame, Pose::identity())]);
