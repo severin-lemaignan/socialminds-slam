@@ -1,0 +1,8 @@
+# The initial robot, per the HW team: no IMU fitted (ADR 0012). Laser-only here;
+# add the depth section when the cameras are wired up. Static mounting tilt still
+# comes from the rig; dynamic (suspension) tilt is uncompensated until the IMU lands.
+rig:
+  source: bag
+sensors:
+  scans:
+    - topic: /scan

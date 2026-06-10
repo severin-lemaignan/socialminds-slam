@@ -25,6 +25,8 @@ slam-map.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 rerun = { version = "0.33.0", default-features = false, features = ["sdk"], optional = true }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml = "0.9.34"
 
 [features]
 # Live / progressive 3D visualization via the rerun viewer (ADR 0011).

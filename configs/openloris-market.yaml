@@ -1,0 +1,12 @@
+# OpenLORIS market scenes (Scrubber 75 robot): NO 2D laser in these bags — depth + IMU
+# only (the depth-only registration limits are tracked in TODO.md).
+rig:
+  source: bag
+sensors:
+  imus:
+    - gyro_topic: /d400/gyro/sample
+      accel_topic: /d400/accel/sample
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      stride: 4
+      every_nth: 3

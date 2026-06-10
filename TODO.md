@@ -14,7 +14,8 @@ motivate an item are noted inline.
 - [ ] **Clean-3D-map project**: filter depth to remove outliers; post-hoc model
       filtering; … → target: a *compact* map suitable for downstream tasks like
       semantic segmentation.
-- [ ] **No-IMU option** (graceful degradation when no usable IMU stream is present).
+- [x] **No-IMU option** — analysed and contractual (ADR 0012); measured cost ≈ 4 cm
+      on cafe1-1 (0.203 laser-only vs 0.164 with IMU); `configs/no-imu.yaml`.
 
 ## Front-end / registration
 
@@ -35,11 +36,11 @@ motivate an item are noted inline.
 
 ## Loop closure & re-localization
 
-- [ ] **Stage 3b — GTSAM pose graph**: feed the recorded `LoopClosure` edges +
-      submap-anchor odometry into `slam-backend`; smooth graph corrections replace
-      pose snapping (snap-servo works but costs jitter on drift-free revisits,
-      measured 0.0543→0.0559 on cafe1-2); re-pose frozen submaps on optimisation.
-      GTSAM builds locally; awaiting first green CI with the vendored build.
+- [ ] **Stage 3b — GTSAM pose graph**: graph shape validated against real GTSAM
+      (`slam-backend/tests/loop_graph.rs`: anchors + odometry edges + loop edge →
+      drift distributed). Remaining: frontend edge bookkeeping (record anchor-relative
+      poses in `LoopClosure`, expose anchors), online optimise-on-loop, re-pose frozen
+      submaps, replace the snap-servo (its jitter: 0.0543→0.0559 on cafe1-2).
 - [ ] **Per-submap appearance signatures** (MapClosures-style density images):
       replace the proximity-only loop gating; prerequisite for corridor aliasing
       robustness and for re-localization.

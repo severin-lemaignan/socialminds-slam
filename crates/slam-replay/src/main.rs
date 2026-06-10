@@ -7,6 +7,7 @@
 //! the harness depends on never changes. With `--metrics` it also writes a
 //! compute-metrics JSON sidecar.
 
+mod config;
 mod metrics;
 mod viz;
 
@@ -63,6 +64,14 @@ struct Args {
     /// scan is treated as taken at the base frame (the single-centred-lidar default).
     #[arg(long, value_name = "FILE")]
     urdf: Option<PathBuf>,
+
+    /// YAML run configuration (ADR 0013): sensor set + rig source + ingest tuning.
+    /// Mutually exclusive with the per-topic flags below.
+    #[arg(long, value_name = "FILE", requires = "bag", conflicts_with_all = [
+        "urdf", "rig_from_bag", "imu_topic", "gyro_topic", "accel_topic",
+        "scan_topic", "depth_topic", "camera_info_topic",
+    ])]
+    config: Option<PathBuf>,
 
     /// Build the rig from the bag's own `/tf_static` (the recorded counterpart of the
     /// URDF's fixed joints — ADR 0009). Needs `--bag`.
@@ -313,6 +322,108 @@ type BagInputs = (
     Vec<slam_types::PointCloud>,
 );
 
+/// Load every stream named by a run configuration (ADR 0013) from the bag, in one
+/// pass for scans+IMUs and one pass per depth camera.
+fn load_bag_inputs_from_config(
+    bag: &Path,
+    cfg: &config::RunConfig,
+    rig: Option<&SensorRig>,
+) -> Result<BagInputs> {
+    let scan_topics: Vec<&str> = cfg
+        .sensors
+        .scans
+        .iter()
+        .map(|sc| sc.topic.as_str())
+        .collect();
+    let mut imu_topics: Vec<&str> = Vec::new();
+    for imu in &cfg.sensors.imus {
+        match (&imu.topic, &imu.gyro_topic, &imu.accel_topic) {
+            (Some(t), _, _) => imu_topics.push(t),
+            (None, Some(g), Some(a)) => {
+                imu_topics.push(g);
+                imu_topics.push(a);
+            }
+            _ => unreachable!("validated at load"),
+        }
+    }
+
+    let mut imu: Vec<ImuSample> = Vec::new();
+    let mut scans: Vec<LaserScan2D> = Vec::new();
+    if !scan_topics.is_empty() || !imu_topics.is_empty() {
+        let mut streams = slam_datasets::read_streams_from_bag(bag, &imu_topics, &scan_topics)
+            .with_context(|| format!("reading bag {}", bag.display()))?;
+        for imu_cfg in &cfg.sensors.imus {
+            let (mut stream, frame_topic) = match (&imu_cfg.topic, &imu_cfg.gyro_topic) {
+                (Some(t), _) => (streams.imu.remove(t.as_str()).unwrap_or_default(), t),
+                (None, Some(g)) => {
+                    let accel = imu_cfg.accel_topic.as_ref().expect("validated");
+                    (
+                        slam_datasets::merge_split_imu(
+                            &streams.imu.remove(g.as_str()).unwrap_or_default(),
+                            &streams.imu.remove(accel.as_str()).unwrap_or_default(),
+                        ),
+                        g,
+                    )
+                }
+                _ => unreachable!(),
+            };
+            if let (Some(rig), Some(frame_id)) = (rig, streams.imu_frames.get(frame_topic.as_str()))
+            {
+                let frame = resolve_frame(rig, frame_id)?;
+                for s in &mut stream {
+                    s.frame = frame;
+                }
+            }
+            imu.extend(stream);
+        }
+        imu.sort_by_key(|s| s.stamp);
+
+        for sc in &cfg.sensors.scans {
+            let mut stream = streams.scans.remove(sc.topic.as_str()).unwrap_or_default();
+            if let (Some(rig), Some(frame_id)) = (rig, streams.scan_frames.get(sc.topic.as_str())) {
+                let frame = resolve_frame(rig, frame_id)?;
+                for s in &mut stream {
+                    s.frame = frame;
+                }
+            }
+            scans.extend(stream);
+        }
+        scans.sort_by_key(|s| s.stamp);
+    }
+
+    let mut clouds: Vec<slam_types::PointCloud> = Vec::new();
+    for d in &cfg.sensors.depth {
+        let depth_cfg = slam_datasets::DepthConfig {
+            stride: d.stride,
+            min_range: d.min_range,
+            max_range: d.max_range,
+        };
+        let (mut cs, frame_id) = slam_datasets::read_depth_clouds(
+            bag,
+            &d.topic,
+            &d.info_topic(),
+            &depth_cfg,
+            d.every_nth,
+        )
+        .with_context(|| format!("reading depth from {} / {}", d.topic, d.info_topic()))?;
+        if let Some(rig) = rig {
+            let frame = resolve_frame(rig, &frame_id)?;
+            for c in &mut cs {
+                c.frame = frame;
+            }
+        }
+        eprintln!(
+            "slam-replay: {} depth clouds from {} (frame {frame_id:?}, every {}th)",
+            cs.len(),
+            d.topic,
+            d.every_nth.max(1)
+        );
+        clouds.extend(cs);
+    }
+    clouds.sort_by_key(|c| c.stamp);
+    Ok((imu, scans, clouds))
+}
+
 fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<BagInputs> {
     let imu_topics: Vec<&str> = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
         (Some(imu), None, None) => vec![imu],
@@ -471,9 +582,26 @@ fn extrinsics_table(rig: &SensorRig, used: &[FrameId]) -> Vec<Pose> {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let rig = match (&args.urdf, args.rig_from_bag) {
+    let run_cfg = args
+        .config
+        .as_deref()
+        .map(config::RunConfig::load)
+        .transpose()?;
+    let (urdf_arg, rig_from_bag_arg, base_frame_arg) = match &run_cfg {
+        Some(rc) => (
+            rc.rig.urdf.clone(),
+            rc.rig.source == config::RigSource::Bag,
+            rc.rig.base_frame.clone(),
+        ),
+        None => (
+            args.urdf.clone(),
+            args.rig_from_bag,
+            args.base_frame.clone(),
+        ),
+    };
+    let rig = match (&urdf_arg, rig_from_bag_arg) {
         (Some(path), _) => Some(
-            SensorRig::from_urdf_file(path, &args.base_frame)
+            SensorRig::from_urdf_file(path, &base_frame_arg)
                 .with_context(|| format!("building rig from {}", path.display()))?,
         ),
         (None, true) => {
@@ -487,12 +615,12 @@ fn main() -> Result<()> {
                 .into_iter()
                 .map(|t| (t.parent, t.child, t.transform))
                 .collect();
-            let rig = SensorRig::from_transforms(&args.base_frame, &edges)
+            let rig = SensorRig::from_transforms(&base_frame_arg, &edges)
                 .context("building rig from the bag's /tf_static")?;
             eprintln!(
                 "slam-replay: rig from /tf_static: {} frames around {:?}",
                 rig.len(),
-                args.base_frame
+                base_frame_arg
             );
             Some(rig)
         }
@@ -500,7 +628,10 @@ fn main() -> Result<()> {
     };
 
     let (imu, scans, clouds): BagInputs = if let Some(bag) = &args.bag {
-        load_bag_inputs(bag, &args, rig.as_ref())?
+        match &run_cfg {
+            Some(rc) => load_bag_inputs_from_config(bag, rc, rig.as_ref())?,
+            None => load_bag_inputs(bag, &args, rig.as_ref())?,
+        }
     } else {
         (
             load_imu_csvs(&args.imu, rig.as_ref())?,
