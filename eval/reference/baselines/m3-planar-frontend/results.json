@@ -1,0 +1,158 @@
+[
+  {
+    "system": "stationary",
+    "sequence": "cafe1-1",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 6.262490861385964,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": NaN,
+      "std": NaN
+    },
+    "real_time_factor": {
+      "mean": 48135.47633333333,
+      "std": 9316.286117679525
+    },
+    "latency_p99_us": {
+      "mean": 0.016666666666666666,
+      "std": 0.003091206165165235
+    },
+    "peak_rss_mb": {
+      "mean": 6.854166666666667,
+      "std": 0.11785113019775792
+    }
+  },
+  {
+    "system": "imu_dead_reckoning",
+    "sequence": "cafe1-1",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 6416.936902648996,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 11.155914068587501,
+      "std": 0.0
+    },
+    "real_time_factor": {
+      "mean": 32790.585666666666,
+      "std": 1202.9649136984635
+    },
+    "latency_p99_us": {
+      "mean": 0.05833333333333333,
+      "std": 0.02033606539022619
+    },
+    "peak_rss_mb": {
+      "mean": 6.837239583333333,
+      "std": 0.13136207599105823
+    }
+  },
+  {
+    "system": "scan_matching",
+    "sequence": "cafe1-1",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 0.08971788256573404,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 0.03264339560048051,
+      "std": 0.0
+    },
+    "real_time_factor": {
+      "mean": 27.23466666666667,
+      "std": 0.1646113267332754
+    },
+    "latency_p99_us": {
+      "mean": 3405.4960000000005,
+      "std": 12.403750749941217
+    },
+    "peak_rss_mb": {
+      "mean": 10.986979166666666,
+      "std": 0.05752792196451698
+    }
+  },
+  {
+    "system": "stationary",
+    "sequence": "cafe1-2",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 9.09090365778355,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": NaN,
+      "std": NaN
+    },
+    "real_time_factor": {
+      "mean": 44444.59066666666,
+      "std": 8965.28512249277
+    },
+    "latency_p99_us": {
+      "mean": 0.018,
+      "std": 0.0024494897427831787
+    },
+    "peak_rss_mb": {
+      "mean": 8.618489583333334,
+      "std": 0.0770982882452472
+    }
+  },
+  {
+    "system": "imu_dead_reckoning",
+    "sequence": "cafe1-2",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 15909.221023170483,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 17.47320760494164,
+      "std": 0.0
+    },
+    "real_time_factor": {
+      "mean": 34296.23466666666,
+      "std": 749.8897659542289
+    },
+    "latency_p99_us": {
+      "mean": 0.04466666666666667,
+      "std": 0.00047140452079103207
+    },
+    "peak_rss_mb": {
+      "mean": 8.763020833333334,
+      "std": 0.10434554952942278
+    }
+  },
+  {
+    "system": "scan_matching",
+    "sequence": "cafe1-2",
+    "source": "openloris",
+    "repeats": 3,
+    "ate_rmse_m": {
+      "mean": 0.06648347286049666,
+      "std": 0.0
+    },
+    "rpe_rmse_m": {
+      "mean": 0.06570372422446785,
+      "std": 0.0
+    },
+    "real_time_factor": {
+      "mean": 22.42833333333333,
+      "std": 0.3889921450220929
+    },
+    "latency_p99_us": {
+      "mean": 4273.3043333333335,
+      "std": 82.44502927136094
+    },
+    "peak_rss_mb": {
+      "mean": 15.240885416666666,
+      "std": 0.03226435336813507
+    }
+  }
+]

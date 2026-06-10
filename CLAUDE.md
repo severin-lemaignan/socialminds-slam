@@ -49,7 +49,10 @@ Top priority is **loop closure / global consistency**. Full requirements in
    the `Map` trait: pure-Rust sparse grid (default, CI) + feature-gated **system**
    OpenVDB 10.x (`libopenvdb-dev`, NOT vendored) for the robot and in-process reMap
    sharing. **Re-localization < 1 s, verified** (per-submap MapClosures signatures).
-   Multi-sensor synthetic tests come in clean + noisy variants. — ADR 0010
+   Multi-sensor synthetic tests come in clean + noisy variants. **Parity gate:** the 3D
+   pipeline must match the planar front-end — accuracy *and* compute — on the archived
+   baseline (`eval/reference/baselines/m3-planar-frontend/`); benchmark every migration
+   stage against it and justify any regression explicitly. — ADR 0010
 
 ## Approach
 **Write the novel core ourselves** (orchestration, fusion, front-ends, map); **reuse the

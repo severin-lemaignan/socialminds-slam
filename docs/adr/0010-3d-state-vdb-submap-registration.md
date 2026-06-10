@@ -122,10 +122,16 @@ Decision 1.
   the solve. Submap overlap consistency (two submaps disagree after odometry drift) —
   standard answer: registration only ever targets *one* active submap; overlaps are
   reconciled by the pose graph, never by voxel blending at write time.
-- **Performance gates (production-readiness):** scan-to-submap registration ≥ 10× sensor
-  rate CPU-only on the dev machine; submap freeze/serialize without blocking the hot
-  path (pipeline rule: drop, never stall); re-localization ≤ 1 s verified; benchmark
-  table extended with map-op metrics (integrate/query/freeze) via criterion.
+- **Performance gates (production-readiness):** the governing gate, set at review
+  (2026-06-10): **the 3D pipeline must match the planar front-end's performance** —
+  accuracy *and* compute — on the archived baseline
+  (`eval/reference/baselines/m3-planar-frontend/`: ATE 0.090/0.066 m, 27×/22× real-time,
+  p99 3.4/4.3 ms on cafe1). Every migration stage is benchmarked against it (planar runs
+  re-anchored on the same machine for compute numbers); a regression must be explicitly
+  justified and accepted, never silently absorbed. Additionally: scan-to-submap
+  registration ≥ 10× sensor rate CPU-only; submap freeze/serialize never blocks the hot
+  path (pipeline rule: drop, never stall); re-localization ≤ 1 s verified; the benchmark
+  table grows map-op metrics (integrate/query/freeze) via criterion.
 - **Pinned by review (2026-06-10):** reMap integration is **memory-based** (shared
   in-process VDB grids — reMap currently runs 10 cm cells but adjusts easily, so SLAM
   owns the resolution); the **1–2 GB map RAM budget is confirmed**; **< 1 s is the hard
