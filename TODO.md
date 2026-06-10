@@ -36,11 +36,13 @@ motivate an item are noted inline.
 
 ## Loop closure & re-localization
 
-- [ ] **Stage 3b — GTSAM pose graph**: graph shape validated against real GTSAM
-      (`slam-backend/tests/loop_graph.rs`: anchors + odometry edges + loop edge →
-      drift distributed). Remaining: frontend edge bookkeeping (record anchor-relative
-      poses in `LoopClosure`, expose anchors), online optimise-on-loop, re-pose frozen
-      submaps, replace the snap-servo (its jitter: 0.0543→0.0559 on cafe1-2).
+- [x] **Stage 3b — GTSAM pose graph**: wired end to end. Submaps store
+      anchor-relative coordinates (re-posing = updating the anchor, voxels never
+      rewritten); odometry edges + anchor-relative loop measurements recorded; the
+      `AnchorGraph` seam keeps the front-end C++-free; GTSAM adapter in slam-replay
+      optimises on every verified loop and re-poses all anchors. cafe1-2 with graph:
+      0.0561 (≈ snap at noise-level drift; the win shows under real drift).
+      Remaining niche: loops during the hand-over overlap window still snap-only.
 - [ ] **Per-submap appearance signatures** (MapClosures-style density images):
       replace the proximity-only loop gating; prerequisite for corridor aliasing
       robustness and for re-localization.

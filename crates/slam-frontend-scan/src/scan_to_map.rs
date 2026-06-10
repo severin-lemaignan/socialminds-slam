@@ -126,12 +126,33 @@ impl Default for ScanToMapConfig {
 /// A verified loop closure: the current base pose re-registered against an old submap.
 #[derive(Debug, Clone, Copy)]
 pub struct LoopClosure {
-    /// Index of the frozen submap the scan re-registered against.
+    /// Index of the frozen (target) submap the scan re-registered against.
     pub submap: usize,
+    /// Index of the submap that was *active* at detection (graph node id).
+    pub active_submap: usize,
     /// The verified base pose (odometry frame) according to that submap.
     pub pose: Se2,
+    /// Base pose relative to the target submap's anchor — the verified measurement.
+    pub rel_target: Se2,
+    /// Base pose relative to the active submap's anchor at detection (odometry side).
+    pub rel_active: Se2,
     /// In-band sample fraction of the verifying registration.
     pub inliers: f64,
+}
+
+/// Optimises the submap-anchor pose graph. Implemented over GTSAM in the composition
+/// layer (`slam-replay`); the front-end stays C++-free (ADR 0001).
+pub trait AnchorGraph {
+    /// `anchors[i]`: current anchor estimates (last = the active submap's anchor).
+    /// `odometry[i]`: measured relative anchor_i → anchor_{i+1}.
+    /// `loops`: `(target_idx, active_idx, measured relative target → active anchor)`.
+    /// Returns optimised anchors (same length), or `None` when optimisation failed.
+    fn optimize(
+        &mut self,
+        anchors: &[Se2],
+        odometry: &[Se2],
+        loops: &[(usize, usize, Se2)],
+    ) -> Option<Vec<Se2>>;
 }
 
 /// Scan-to-submap odometry implementing [`SlamSystem`] (ADR 0010 stage 2).
@@ -165,8 +186,13 @@ pub struct ScanToMapOdometry {
     /// Frozen submaps: `(anchor pose at birth, 2D registration field)` — retained for
     /// loop closure (and, next, re-localization signatures + graph re-posing).
     frozen: Vec<(Se2, SparseTsdf)>,
-    /// Verified loop closures, in detection order (the pose-graph's future edges).
+    /// Verified loop closures, in detection order (the pose-graph's loop edges).
     loops: Vec<LoopClosure>,
+    /// Measured odometry relative between consecutive submap anchors (graph edges) —
+    /// recorded at hand-over time so later re-posing never rewrites measurements.
+    odometry_edges: Vec<Se2>,
+    /// The pose-graph optimiser (GTSAM via the composition layer); None = snap-only.
+    graph: Option<Box<dyn AnchorGraph>>,
     /// Whether any laser scan has been processed (gates depth→pose suppression:
     /// on scan-less datasets depth must keep correcting the pose).
     scan_seen: bool,
@@ -219,6 +245,8 @@ impl ScanToMapOdometry {
             overlap_left: 0,
             frozen: Vec::new(),
             loops: Vec::new(),
+            odometry_edges: Vec::new(),
+            graph: None,
             scan_seen: false,
             lidar_planes: Vec::new(),
             last_integrated: None,
@@ -282,10 +310,13 @@ impl ScanToMapOdometry {
     /// gravity-plane-projected points.
     /// Returns (pose, inlier fraction, weak translation direction).
     fn register(&mut self, initial: Se2, sensor_z: f64) -> (Se2, f64, Option<slam_types::Vec2>) {
-        let map: &dyn TsdfMap = match &self.prev_reg {
-            Some(prev) => prev,
-            None => &self.reg,
+        // Fields store anchor-relative coordinates: solve in the target's local frame
+        // and map the result back through its (possibly re-posed) anchor.
+        let (map, anchor): (&dyn TsdfMap, Se2) = match &self.prev_reg {
+            Some(prev) => (prev, self.prev_anchor),
+            None => (&self.reg, self.submap_birth),
         };
+        let initial = anchor.inverse().compose(&initial);
         let band = self.cfg.tsdf.truncation * 0.9;
         // Floor residuals carry no planar information (see ScanToMapConfig); gate them
         // out of the solve when the rig geometry lets us tell floor from wall.
@@ -343,58 +374,79 @@ impl ScanToMapOdometry {
             }
         }
         let weak = weak_translation_direction(h_translation, self.cfg.degeneracy_eigenvalue_ratio);
-        (transform, inlier_fraction, weak)
+        // Back to the odometry frame (the weak direction rotates with the anchor).
+        let world = anchor.compose(&transform);
+        let weak_world = weak.map(|d| {
+            let (s, c) = anchor.theta.sin_cos();
+            slam_types::Vec2::new(c * d.x - s * d.y, s * d.x + c * d.y)
+        });
+        (world, inlier_fraction, weak_world)
     }
 
-    /// Fuse the lifted points into the active maps at `pose`: full 3D into the map
-    /// product; the floor-gated gravity-plane projection into the 2D registration
-    /// field only for planar scans (`update_reg`) — depth clouds see geometry at every
-    /// height (tables, chairs, people) that the lidar's slice never crosses, and
-    /// flattening it would poison the scan matcher's world.
+    /// Fuse the lifted points at the (odometry-frame) `pose`. Each submap's fields
+    /// store **anchor-relative** coordinates (stage 3b prerequisite): re-posing a
+    /// submap after graph optimisation is then just updating its anchor — voxels are
+    /// never rewritten (ADR 0010).
     fn integrate(&mut self, pose: Se2, sensor_origin_base: Vec3, update_reg: bool) {
-        let origin = Self::apply_planar(&pose, sensor_origin_base);
-        self.world.clear();
-        self.world
-            .extend(self.lifted.iter().map(|&p| Self::apply_planar(&pose, p)));
-        self.map.integrate_points(origin, &self.world);
-        if let Some(prev) = &mut self.prev_map {
-            prev.integrate_points(origin, &self.world);
-        }
+        for which in 0..2 {
+            let anchor = match which {
+                0 => self.submap_birth,
+                _ if self.prev_map.is_some() => self.prev_anchor,
+                _ => break,
+            };
+            let local = anchor.inverse().compose(&pose);
+            let origin = Self::apply_planar(&local, sensor_origin_base);
+            self.world.clear();
+            self.world
+                .extend(self.lifted.iter().map(|&p| Self::apply_planar(&local, p)));
+            match which {
+                0 => self.map.integrate_points(origin, &self.world),
+                _ => self
+                    .prev_map
+                    .as_mut()
+                    .expect("checked above")
+                    .integrate_points(origin, &self.world),
+            }
 
-        let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
-        self.world.clear();
-        if update_reg {
-            // Planar scan: everything except floor hits is slice content.
-            let gate_floor = self.attitude.is_initialized()
-                && self.attitude.tilt().rotate(sensor_origin_base).z
-                    > 2.0 * self.cfg.floor_clearance;
-            let z_min = self.cfg.floor_clearance;
-            self.world.extend(self.lifted.iter().filter_map(|&p| {
-                if gate_floor && p.z < z_min {
-                    return None;
+            let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
+            self.world.clear();
+            if update_reg {
+                // Planar scan: everything except floor hits is slice content.
+                let gate_floor = self.attitude.is_initialized()
+                    && self.attitude.tilt().rotate(sensor_origin_base).z
+                        > 2.0 * self.cfg.floor_clearance;
+                let z_min = self.cfg.floor_clearance;
+                self.world.extend(self.lifted.iter().filter_map(|&p| {
+                    if gate_floor && p.z < z_min {
+                        return None;
+                    }
+                    let q = Self::apply_planar(&local, p);
+                    Some(Vec3::new(q.x, q.y, 0.0))
+                }));
+            } else if !self.lidar_planes.is_empty() {
+                // Depth cloud: only points inside a laser plane's band measure the
+                // slice the scan matcher registers against (step 1; step 2 — hybrid
+                // per-point 3D/2D fan registration — is the planned successor).
+                let tol = self.cfg.reg_band_tolerance;
+                let planes = &self.lidar_planes;
+                let world = &mut self.world;
+                world.extend(self.lifted.iter().filter_map(|&p| {
+                    if !planes.iter().any(|&(_, z)| (p.z - z).abs() <= tol) {
+                        return None;
+                    }
+                    let q = Self::apply_planar(&local, p);
+                    Some(Vec3::new(q.x, q.y, 0.0))
+                }));
+            }
+            if !self.world.is_empty() {
+                match which {
+                    0 => self.reg.integrate_points(flat_origin, &self.world),
+                    _ => {
+                        if let Some(prev) = &mut self.prev_reg {
+                            prev.integrate_points(flat_origin, &self.world);
+                        }
+                    }
                 }
-                let q = Self::apply_planar(&pose, p);
-                Some(Vec3::new(q.x, q.y, 0.0))
-            }));
-        } else if !self.lidar_planes.is_empty() {
-            // Depth cloud: only points inside a laser plane's band measure the slice
-            // the scan matcher registers against (step 1; step 2 — hybrid per-point
-            // 3D/2D fan registration — is the planned successor, see ADR 0010).
-            let tol = self.cfg.reg_band_tolerance;
-            let planes = &self.lidar_planes;
-            let world = &mut self.world;
-            world.extend(self.lifted.iter().filter_map(|&p| {
-                if !planes.iter().any(|&(_, z)| (p.z - z).abs() <= tol) {
-                    return None;
-                }
-                let q = Self::apply_planar(&pose, p);
-                Some(Vec3::new(q.x, q.y, 0.0))
-            }));
-        }
-        if !self.world.is_empty() {
-            self.reg.integrate_points(flat_origin, &self.world);
-            if let Some(prev) = &mut self.prev_reg {
-                prev.integrate_points(flat_origin, &self.world);
             }
         }
 
@@ -419,15 +471,32 @@ impl ScanToMapOdometry {
             self.prev_reg = Some(std::mem::replace(&mut self.reg, fresh));
             self.prev_anchor = self.submap_birth;
             self.overlap_left = self.cfg.submap_overlap_scans;
+            // The graph's odometry edge: measured relative between the two anchors,
+            // frozen at hand-over time.
+            self.odometry_edges
+                .push(self.submap_birth.inverse().compose(&self.current));
             self.submap_birth = self.current;
             self.submap_travel = 0.0;
             self.stats.keyframes += 1; // a submap hand-over is the new "keyframe" event
         }
     }
 
-    /// Verified loop closures detected so far (the pose-graph's future edges).
+    /// Verified loop closures detected so far (the pose-graph's loop edges).
     pub fn loop_closures(&self) -> &[LoopClosure] {
         &self.loops
+    }
+
+    /// Attach a pose-graph optimiser: verified loops then trigger optimisation and
+    /// anchor re-posing instead of bare pose snapping (ADR 0010 stage 3b).
+    pub fn set_graph(&mut self, graph: Box<dyn AnchorGraph>) {
+        self.graph = Some(graph);
+    }
+
+    /// Anchor estimates: frozen submaps in order, then the active submap's anchor.
+    pub fn anchors(&self) -> Vec<Se2> {
+        let mut a: Vec<Se2> = self.frozen.iter().map(|(anchor, _)| *anchor).collect();
+        a.push(self.submap_birth);
+        a
     }
 
     /// Shared post-registration tail: accept/coast, advance the motion model, run the
@@ -525,10 +594,11 @@ impl ScanToMapOdometry {
     /// Floor points contribute near-zero planar Jacobians (vertical gradients) and are
     /// kept — they are structure, and they cannot bias an (x, y, yaw) solve.
     fn register_3d(&mut self, initial: Se2) -> (Se2, f64, Option<slam_types::Vec2>) {
-        let map: &dyn TsdfMap = match &self.prev_map {
-            Some(prev) => prev,
-            None => &self.map,
+        let (map, anchor): (&dyn TsdfMap, Se2) = match &self.prev_map {
+            Some(prev) => (prev, self.prev_anchor),
+            None => (&self.map, self.submap_birth),
         };
+        let initial = anchor.inverse().compose(&initial);
         let band = self.cfg.tsdf.truncation * 0.9;
         let mut transform = initial;
         let mut inlier_fraction = 0.0;
@@ -576,7 +646,13 @@ impl ScanToMapOdometry {
             }
         }
         let weak = weak_translation_direction(h_translation, self.cfg.degeneracy_eigenvalue_ratio);
-        (transform, inlier_fraction, weak)
+        // Back to the odometry frame (the weak direction rotates with the anchor).
+        let world = anchor.compose(&transform);
+        let weak_world = weak.map(|d| {
+            let (s, c) = anchor.theta.sin_cos();
+            slam_types::Vec2::new(c * d.x - s * d.y, s * d.x + c * d.y)
+        });
+        (world, inlier_fraction, weak_world)
     }
 
     /// Attempt loop closure against frozen submaps near the current pose: a seed-grid
@@ -586,6 +662,7 @@ impl ScanToMapOdometry {
     /// (GTSAM, stage 3b) will distribute the correction instead.
     fn try_loop_closure(&mut self) {
         let band = self.cfg.tsdf.truncation * 0.9;
+        let active_submap = self.frozen.len();
         let mut best: Option<LoopClosure> = None;
         for (idx, (anchor, reg)) in self.frozen.iter().enumerate() {
             let dx = anchor.x - self.current.x;
@@ -597,12 +674,16 @@ impl ScanToMapOdometry {
             for sx in [-r, 0.0, r] {
                 for sy in [-r, 0.0, r] {
                     for st in [-yw, 0.0, yw] {
-                        let seed = Se2::new(
+                        // Frozen fields store anchor-relative coordinates: localise
+                        // the seed, solve locally — the result *is* the verified
+                        // anchor-relative measurement the graph needs.
+                        let seed_world = Se2::new(
                             self.current.x + sx,
                             self.current.y + sy,
                             self.current.theta + st,
                         );
-                        let (pose, inliers) = Self::register_against(
+                        let seed = anchor.inverse().compose(&seed_world);
+                        let (rel_target, inliers) = Self::register_against(
                             reg,
                             &self.lifted,
                             &mut self.world,
@@ -618,7 +699,10 @@ impl ScanToMapOdometry {
                         {
                             best = Some(LoopClosure {
                                 submap: idx,
-                                pose,
+                                active_submap,
+                                pose: anchor.compose(&rel_target),
+                                rel_target,
+                                rel_active: self.submap_birth.inverse().compose(&self.current),
                                 inliers,
                             });
                         }
@@ -627,16 +711,54 @@ impl ScanToMapOdometry {
             }
         }
         if let Some(found) = best {
-            // Snap to the verified pose every time: under large drift each individual
-            // correction is small (registration converges near its seed), so it is the
-            // *repetition* that re-localizes — a servo onto the frozen map. The price
-            // is millimetre jitter on drift-free revisits (cafe1-2: 0.0543→0.0559);
-            // gating on innovation breaks the servo and was measured catastrophic on
-            // the ring circuit. Stage 3b (GTSAM) replaces snapping with smooth graph
-            // corrections from the recorded edges.
-            self.current = found.pose;
             self.loops.push(found);
+            // With a pose graph attached (stage 3b) — and outside the transient
+            // hand-over overlap, whose extra in-flight submap the simple anchor list
+            // does not model — optimise and re-pose; otherwise snap (the servo: under
+            // large drift each individual correction is small because registration
+            // converges near its seed, so *repetition* re-localizes; its measured
+            // price is millimetre jitter on drift-free revisits, cafe1-2
+            // 0.0543→0.0559, and gating it was catastrophic on the ring circuit).
+            if self.graph.is_some() && self.prev_map.is_none() {
+                self.optimize_graph(found);
+            } else {
+                self.current = found.pose;
+            }
         }
+    }
+
+    /// Run the pose graph over all anchors + recorded edges, re-pose every submap
+    /// anchor, and carry the current pose through the active anchor's correction.
+    fn optimize_graph(&mut self, latest: LoopClosure) {
+        let anchors = self.anchors();
+        let loops: Vec<(usize, usize, Se2)> = self
+            .loops
+            .iter()
+            .map(|l| {
+                // Measured relative anchor_target → anchor_active:
+                // anchor_active = (anchor_target ∘ rel_target) ∘ rel_active⁻¹.
+                (
+                    l.submap,
+                    l.active_submap,
+                    l.rel_target.compose(&l.rel_active.inverse()),
+                )
+            })
+            .collect();
+        let graph = self.graph.as_mut().expect("checked by caller");
+        let Some(optimized) = graph.optimize(&anchors, &self.odometry_edges, &loops) else {
+            self.current = latest.pose; // graph failed: fall back to the snap
+            return;
+        };
+        debug_assert_eq!(optimized.len(), anchors.len());
+        for ((anchor, _), new_anchor) in self.frozen.iter_mut().zip(&optimized) {
+            *anchor = *new_anchor;
+        }
+        let new_active = *optimized.last().expect("non-empty");
+        // Re-express the current pose under the re-posed active anchor, then apply
+        // the loop's verified local measurement under the *updated* target anchor.
+        let target = optimized[latest.submap];
+        self.submap_birth = new_active;
+        self.current = target.compose(&latest.rel_target);
     }
 
     /// One registration of `lifted` (gravity-plane projected) against an arbitrary

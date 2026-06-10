@@ -95,3 +95,52 @@ fn ring_circuit_closes_the_loop() {
     );
     let _ = without;
 }
+
+/// The graph seam: bookkeeping shapes are right and re-posing is applied.
+struct RecordingGraph {
+    calls: std::rc::Rc<std::cell::RefCell<Vec<(usize, usize, usize)>>>,
+}
+
+impl slam_frontend_scan::AnchorGraph for RecordingGraph {
+    fn optimize(
+        &mut self,
+        anchors: &[Se2],
+        odometry: &[Se2],
+        loops: &[(usize, usize, Se2)],
+    ) -> Option<Vec<Se2>> {
+        self.calls
+            .borrow_mut()
+            .push((anchors.len(), odometry.len(), loops.len()));
+        Some(anchors.to_vec()) // identity optimisation
+    }
+}
+
+#[test]
+fn graph_receives_consistent_anchor_and_edge_counts() {
+    let calls = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let segments = ring_world();
+    let mut truth = Se2::new(RADIUS, 0.0, std::f64::consts::FRAC_PI_2);
+    let mut odo = ScanToMapOdometry::anchored_at(truth.to_pose(), ScanToMapConfig::default());
+    odo.set_graph(Box::new(RecordingGraph {
+        calls: calls.clone(),
+    }));
+    for k in 0..SCANS {
+        let step = 0.06 + 0.015 * (k as f64 / 6.0).sin();
+        truth = truth.compose(&Se2::new(step, 0.0, step / RADIUS));
+        odo.process_scan(&noisy_scan(&truth, k as f64 * 0.05, &segments, k as u64));
+    }
+    let calls = calls.borrow();
+    assert!(
+        !calls.is_empty(),
+        "graph never invoked on a closing circuit"
+    );
+    for &(anchors, odometry, loops) in calls.iter() {
+        assert_eq!(odometry, anchors - 1, "one odometry edge per hop");
+        assert!(loops >= 1);
+    }
+    // Every recorded loop names a valid graph node (submaps may spawn after it).
+    for l in odo.loop_closures() {
+        assert!(l.active_submap < odo.anchors().len());
+        assert!(l.submap < l.active_submap);
+    }
+}

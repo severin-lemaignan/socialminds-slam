@@ -4211,6 +4211,7 @@ dependencies = [
  "rerun",
  "serde",
  "serde_yaml",
+ "slam-backend",
  "slam-baseline",
  "slam-datasets",
  "slam-frontend-scan",

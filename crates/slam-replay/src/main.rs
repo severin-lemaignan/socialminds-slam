@@ -8,6 +8,7 @@
 //! compute-metrics JSON sidecar.
 
 mod config;
+mod graph;
 mod metrics;
 mod viz;
 
@@ -701,11 +702,16 @@ fn main() -> Result<()> {
                     ScanOdometryConfig::default(),
                     extrinsics,
                 ))),
-                _ => Engine::ScanToMap(Box::new(ScanToMapOdometry::with_extrinsics(
-                    init.pose,
-                    ScanToMapConfig::default(),
-                    extrinsics,
-                ))),
+                _ => {
+                    let mut odo = ScanToMapOdometry::with_extrinsics(
+                        init.pose,
+                        ScanToMapConfig::default(),
+                        extrinsics,
+                    );
+                    // Verified loops feed the GTSAM pose graph (ADR 0010 stage 3b).
+                    odo.set_graph(Box::new(graph::GtsamAnchorGraph::default()));
+                    Engine::ScanToMap(Box::new(odo))
+                }
             }
         }
     };
