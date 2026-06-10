@@ -14,3 +14,4 @@ get the next number; superseded ones are marked, not deleted. Use
 | [0006](0006-vendored-gtsam-build.md) | Vendor GTSAM as a pinned submodule, built static and Boost-free by cargo | accepted |
 | [0007](0007-frontend-order-and-scan-matching.md) | Front-end order: 2D scan matching first, as point-to-line ICP | accepted |
 | [0008](0008-inhouse-bag-reader.md) | In-house indexed ROS1 bag reader (replacing the `rosbag` crate) | accepted |
+| [0009](0009-sensor-rig-model.md) | Sensor rig from URDF + CameraInfo; frame-tagged measurements | accepted |

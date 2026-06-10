@@ -29,9 +29,11 @@ fisheye), InfiniTAMv2, ElasticFusion, and the robot's wheel odometry.
   run (the paper notes this negative ATE↔CR correlation explicitly). **Never compare ATE
   without its CR.** ElasticFusion's CR=100 % everywhere is tracking-success only (CR∞),
   with huge ATEs in large scenes.
-- **No tested system uses the 2D lidars** — those generated the ground truth. Inputs are
-  cameras, IMU and wheel odometry. Our engine *does* use the lidars, so beating these
-  numbers shows the platform's potential, not algorithmic superiority over those systems.
+- **No tested system uses the 2D lidars — and the ground truth itself is laser-based**
+  (a hector_mapping variant localizing in a pre-built map for cafe/corridor). Our scan
+  front-end estimates from the *same sensor modality* the GT was derived from, so its
+  errors can correlate with the GT's and a very low lidar ATE is partly expected — treat
+  it as platform potential, not algorithmic superiority over the camera-based systems.
 - The paper interpolates ground truth to each estimate's timestamp (laser-based GT is
   low-rate); `evo` matches nearest timestamps. Negligible at our error scales.
 - Lifelong CR uses ATE thresholds of 1/3/5 m (small/medium/large scenes) + AOE ≤ 30°;
