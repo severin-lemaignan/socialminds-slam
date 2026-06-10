@@ -1,5 +1,5 @@
 # OpenLORIS market scenes (Scrubber 75 robot): NO 2D laser in these bags — depth + IMU
-# only (the depth-only registration limits are tracked in TODO.md).
+# only (the depth-only registration limits are tracked in docs/ROADMAP.md).
 rig:
   source: bag
 sensors:

@@ -2,10 +2,13 @@
 
 A from-scratch, real-time, fully-3D SLAM engine for an indoor mobile robot.
 
-> **Status:** the 2D-lidar front-end is live — tilt-compensated 3D scan fans registered
-> against TSDF submaps, multi-sensor rigs from URDF / `tf_static`, verified geometric
-> loop closure — benchmarked against the OpenLORIS-Scene dataset and the published
-> state of the art (see the [roadmap](docs/ROADMAP.md)). RGB-D-inertial is next.
+> **Status:** the front-end is live and multi-modal — tilt-compensated 3D scan fans
+> *and* RGB-D depth clouds registered against TSDF submaps, multi-sensor rigs from
+> URDF / `tf_static`, wheel-odometry motion prior (IMU optional), geometrically
+> verified loop closure feeding a GTSAM pose graph over anchor-relative submaps —
+> benchmarked against the OpenLORIS-Scene dataset and the published state of the art
+> (see the [roadmap](docs/ROADMAP.md)). Next: dynamics masking (people) and
+> appearance-based loop signatures (corridors).
 
 ## What this is
 
@@ -37,6 +40,8 @@ Design priorities, in order:
 | Sensor geometry | **Rig from the robot's URDF / a bag's `tf_static`** (frame-tagged measurements) | [0009](docs/adr/0009-sensor-rig-model.md) |
 | 3D state & registration | **SE(3) body + TSDF submap registration, dual Rust/OpenVDB backend** | [0010](docs/adr/0010-3d-state-vdb-submap-registration.md) |
 | Visualization | **rerun for live/progressive 3D** (feature-gated); matplotlib for quick 2D | [0011](docs/adr/0011-visualization-stack.md) |
+| IMU | **Optional accuracy enhancer, never a prerequisite** (the robot ships without one) | [0012](docs/adr/0012-imu-optional.md) |
+| Run configuration | **YAML selects sensors & ingest tuning — never calibration** | [0013](docs/adr/0013-run-configuration.md) |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan.
@@ -49,13 +54,17 @@ crates/                Rust workspace (the engine; middleware-independent core)
   slam-baseline/       Trivial reference baselines (stationary, IMU dead-reckoning)
   slam-rig/            Sensor rig: frames + extrinsics from URDF / tf_static
   slam-map/            3D map substrate: narrow-band TSDF behind a batch-level trait
-  slam-frontend-scan/  2D-lidar front-end: PLICP, attitude, scan-to-submap, loops
-  slam-backend/        Factor-graph optimisation (wrapped GTSAM)
-  slam-datasets/       ROS1 bag reader (no ROS install): IMU, scans, tf_static
+  slam-frontend-scan/  Scan/depth front-end: PLICP, attitude, scan-to-submap, loops
+  slam-backend/        Factor-graph optimisation (wraps GTSAM via slam-gtsam-sys)
+  slam-gtsam-sys/      cxx shim over the vendored GTSAM (static, Boost-free build)
+  slam-datasets/       ROS1 bag reader (no ROS install): IMU, scans, depth+colour,
+                       odometry, tf_static
   slam-replay/         CLI: run a system over a dataset → TUM trajectory (+ viz)
+configs/               Run configurations (ADR 0013): sensor sets per dataset/robot
 docs/                  Architecture, roadmap, and Architecture Decision Records
   adr/                 One file per decision
 eval/                  CPU-only evaluation harness (Python): datasets, metrics, gates
+third_party/gtsam      Pinned GTSAM submodule (clone with --recursive; ADR 0006)
 ```
 
 ## Quick start (CPU-only, no GPU/ROS required)
@@ -93,9 +102,12 @@ an optional fast-path, never a requirement (see
 Two complementary tools ([ADR 0011](docs/adr/0011-visualization-stack.md)):
 
 **Live / progressive 3D — [rerun](https://rerun.io).** The engine logs directly into
-the rerun viewer: the current scan sweep, the growing estimated trajectory, ground
-truth, the map accumulating chunk by chunk, and the final TSDF surface (coloured by
-height), all on a scrubbable `sensor_time` timeline. The rerun SDK is a heavy
+the rerun viewer: the current scan sweep and depth cloud, the growing estimated
+trajectory, ground truth, the map accumulating chunk by chunk (solid cubes at the
+sampling pitch — **coloured** when the depth stream names its colour topic: points
+carry per-pixel RGB, displayed as the illumination-invariant CIELAB a\*b\* chroma),
+and the final TSDF surface as true-size voxel cubes, one entity per submap posed by
+its anchor — all on a scrubbable `sensor_time` timeline. The rerun SDK is a heavy
 dependency, so it is **feature-gated** — build once with `--features viz`:
 
 ```bash
@@ -103,10 +115,10 @@ dependency, so it is **feature-gated** — build once with `--features viz`:
 cargo build --release -p slam-replay --features viz
 pip install rerun-sdk            # provides the `rerun` viewer binary
 
-# live: a viewer opens and the map builds in front of you while the engine runs
+# live: a viewer opens and the coloured map builds in front of you while the
+# engine runs straight off the ROS1 bag (sensor set from the YAML config)
 ./target/release/slam-replay --baseline scan-matching-3d \
-    --scan data/openloris/_materialized/cafe1-1/scan.csv \
-    --init-pose-from-tum data/openloris/groundtruth/per-sequence/cafe1-1/groundtruth.txt \
+    --bag data/openloris/cafe1-1.bag --config configs/openloris-cafe.yaml \
     --rerun spawn
 
 # record instead, then replay the progressive map build at your own pace

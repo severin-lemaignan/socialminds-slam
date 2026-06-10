@@ -73,14 +73,14 @@ intended shape:
 |---|---|---|
 | `slam-types` | time, SE(3)/SO(3), sensor samples, trajectories, TUM I/O — the zero-copy data structures | **present** |
 | `slam-baseline` | `SlamSystem` trait + trivial reference baselines (stationary, IMU dead-reckoning) | **present** |
-| `slam-datasets` | dataset ingestion: read sensor streams from ROS1 bags (`rosbag` crate) into engine types; `slam-bag2imu` | **present** |
-| `slam-replay` | CLI: drive a `SlamSystem` over a dataset, emit a TUM trajectory | **present** |
-| `slam-imu` | IMU preintegration | planned |
-| `slam-frontend-lidar` | 2D planar scan-matching | planned |
-| `slam-frontend-rgbd` | RGB-D-inertial odometry | planned |
-| `slam-loop` | MapClosures-style detection + geometric/visual verification | planned |
-| `slam-backend` | factor graph; wraps GTSAM via `slam-gtsam-sys` | planned |
-| `slam-map` | `Map` trait + TSDF/ESDF and OpenVDB backends | planned |
+| `slam-rig` | sensor rig: frames + extrinsics from URDF / `tf_static` (ADR 0009) | **present** |
+| `slam-datasets` | dataset ingestion: in-house indexed ROS1 bag reader (ADR 0008) → IMU, scans, depth+colour clouds, odometry, `tf_static`; `slam-bag2imu`/`-bag2scan`/`-bag2csv` | **present** |
+| `slam-map` | map substrate: `TsdfMap` trait + pure-Rust sparse narrow-band TSDF; OpenVDB backend planned (ADR 0010) | **present** |
+| `slam-frontend-scan` | the live front-end: PLICP, IMU attitude, 3D scan/depth-to-submap registration, verified loop closure, `AnchorGraph` seam | **present** |
+| `slam-backend` | factor graph (pose graphs, IMU preintegration); wraps GTSAM via `slam-gtsam-sys` | **present** |
+| `slam-gtsam-sys` | cxx shim over the vendored GTSAM 4.3a1 (static, Boost-free — ADR 0006) | **present** |
+| `slam-replay` | CLI: drive a `SlamSystem` over CSVs or straight from a ROS1 bag (YAML run config, ADR 0013), emit TUM trajectory + metrics + rerun viz (ADR 0011) | **present** |
+| `slam-loop` | MapClosures-style appearance signatures + re-localization (today loop closure lives in `slam-frontend-scan`) | planned |
 | `slam-engine` | stage orchestration, threading, sensor bus | planned |
 | `slam-ros2` | rclrs node; zero-copy bridge | planned |
 | bindings | `pyo3` (Python) / `cxx` (C++) zero-copy hub | planned |
@@ -94,7 +94,9 @@ works end-to-end before any real algorithm is written. See
 
 ## 6. Open questions tracked for later ADRs
 
-- RGB-D-inertial odometry: build on a filter (MSCKF-style) vs. sliding-window graph.
+- Visual front-end: whether feature/photometric RGB-D odometry is needed at all once
+  dynamics masking lands (depth-geometric registration is live — ADR 0010; lifelong-SLAM
+  evidence favours masking + geometry over raw photometry).
 - Loop-closure descriptor stack: MapClosures alone vs. + learned visual VPR (NetVLAD/AnyLoc).
 - Dynamic masking: which segmentation model, and the CPU-fallback path when no GPU.
 - Map: confirm GPU-TSDF + OpenVDB split and the reMap interface ([ADR 0004](adr/0004-map-representation.md)).

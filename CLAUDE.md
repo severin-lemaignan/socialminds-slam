@@ -104,9 +104,12 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
   initial pose. OpenLORIS split gyro/accel topics are merged by the adapter.
 - `python -m harness.score …` → score an external reference (RTAB-Map/GLIM) trajectory.
 - `slam-replay` (run a system over `--imu`/`--scan` CSVs or straight from a ROS1 bag via
-  `--bag` + topic flags; `--urdf` resolves multi-lidar frames/extrinsics, ADR 0009;
-  `--metrics`, `--init-pose-from-tum`); `slam-bag2imu` / `slam-bag2scan` / `slam-bag2csv`
-  (ROS1 bag → CSV, `--list`). `benchmark --direct-bag` skips CSV materialisation.
+  `--bag` + either a YAML `--config` (ADR 0013, see `configs/`) or per-topic flags:
+  scans/IMU/`--depth-topic` (+`--color-topic` for the coloured map)/`--odom-topic`;
+  `--urdf` resolves multi-lidar frames/extrinsics, ADR 0009; `--metrics`,
+  `--init-pose-from-tum`; A/B knobs `--no-loops`/`--no-graph`/`--loop-min-inliers`);
+  `slam-bag2imu` / `slam-bag2scan` / `slam-bag2csv` (ROS1 bag → CSV, `--list`).
+  `benchmark --direct-bag` skips CSV materialisation.
 - `python -m harness.viz --openloris cafe1-1` — interactive scan/trajectory debugger
   (scans through estimated poses + ground truth; `--save` for headless PNG).
 - **Live/progressive 3D viz (ADR 0011):** build with `--features viz`, then
@@ -123,17 +126,21 @@ trivial baselines on MH_01_easy + cafe1-1 — the floor to beat. Remaining M1 op
 run RTAB-Map/GLIM on the robot and archive the baseline. **M2 largely done**:
 `slam-gtsam-sys` + `slam-backend` (pose graphs, IMU preintegration, instrumented LM solves,
 synthetic-graph tests green locally); awaiting first green CI with the vendored GTSAM.
-**M3 in progress**: 2D scan-matching front-end done (`slam-frontend-scan`, PLICP, ADR 0007)
-— **ATE 0.090 m on cafe1-1, 0.066 m on cafe1-2** (vs 0.251 m best published camera-based,
-`eval/reference/sota/`; caveat: OpenLORIS GT is itself laser-based). **Sensor rig landed**
-(ADR 0009): `slam-rig` reads the robot's URDF, measurements are frame-tagged, the scan
-front-end fuses **multiple lidars** through per-sensor extrinsics into one shared pose
-(dual-lidar raycast harness + mock URDF in `slam-frontend-scan/tests/`). **ADR 0010
-stages 1+2 done**: IMU attitude filter + tilt-compensated 3D fans + ICP degeneracy guard
-(corridor-axis slip caught and filled from prediction); `slam-map` (TSDF trait + Rust
-sparse backend) and `scan_matching_3d` scan-to-submap registration (2.5 cm submap voxels,
-keyframed integration — fusing every scan feeds drift back into the map; no residual
-trimming — measured harmful on TSDF). **Beats the planar parity gate**: ATE 0.039/0.055 m
-vs 0.090/0.066, p99 0.9 ms vs 3.6/4.6 ms, 53x real-time vs 21-27x (cafe1-1/-2, RSS +6 MB).
-Next: submap pose-graph + signatures (re-localization), OpenVDB backend, RGB-D-inertial.
-See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**M3 largely done**: planar PLICP front-end (ADR 0007, **ATE 0.090/0.066 m** on
+cafe1-1/-2, archived as the **parity gate**) superseded by the full-3D pipeline
+(ADR 0010 stages 1–3b): IMU attitude + tilt-compensated 3D fans + ICP degeneracy guard,
+`slam-map` (TSDF trait + Rust sparse backend), scan-to-submap registration. **Beats the
+parity gate: ATE 0.039/0.055 m, p99 0.9 ms, 53x real-time** (cafe1-1/-2). Multi-lidar
+rig (ADR 0009: URDF/`tf_static`, frame-tagged measurements); **RGB-D depth registration**
+(range-adaptive sampling, separate 5 cm 3D field — market1-1 tracks at ATE 4.38 m ≈
+paper's wheel-odom baseline); **wheel-odometry motion prior** (ADR 0012 IMU-less
+contract: depth-only cafe1-1 2.8 → 0.456 m); YAML run configs (ADR 0013). Depth→pose
+stays gated behind dynamics masking when scans are present (people dominate — measured).
+**M4 in progress**: geometrically verified, modality-aware loop closure against frozen
+anchor-relative submaps + **GTSAM pose graph wired** (stage 3b; optimise on every
+verified loop, anchors re-posed, voxels never rewritten). Rerun viz shows the coloured
+3D map (CIELAB a*b*, illumination-invariant), true-size voxel cubes, per-submap TSDF
+entities. **Next (top blockers): dynamics masking (people), per-submap appearance
+signatures (corridor aliasing + re-localization), OpenVDB backend.**
+Open work lives in [`docs/ROADMAP.md`](docs/ROADMAP.md) (per-milestone checklists —
+the former TODO.md is folded in).
