@@ -39,6 +39,17 @@ Top priority is **loop closure / global consistency**. Full requirements in
 5. **Evaluation-first:** harness + trivial baselines (stationary, IMU dead-reckoning)
    before novel algorithms. TUM trajectory format; `evo` for ATE/RPE; run N× → mean±std;
    loop closure judged by ATE with/without + detector precision/recall. — ADR 0005
+6. **Sensor rig from the robot's URDF** (read directly, no ROS runtime; `slam-rig`);
+   intrinsics from CameraInfo; measurements self-identify via `header.frame_id`; ROS
+   timestamps are the single time base. No bespoke calibration format. — ADR 0009
+7. **Full-3D state + TSDF submap registration.** Base is a 3D body (scan plane tilts —
+   IMU attitude is a front-end prerequisite); scans register as 3D fans against
+   per-submap narrow-band TSDFs (~5 cm voxels, submaps re-posed by the pose graph, never
+   voxel rewrites; 100×100×12 m target, 1–2 GB RAM budget). **Dual map backend** behind
+   the `Map` trait: pure-Rust sparse grid (default, CI) + feature-gated **system**
+   OpenVDB 10.x (`libopenvdb-dev`, NOT vendored) for the robot and in-process reMap
+   sharing. **Re-localization < 1 s, verified** (per-submap MapClosures signatures).
+   Multi-sensor synthetic tests come in clean + noisy variants. — ADR 0010
 
 ## Approach
 **Write the novel core ourselves** (orchestration, fusion, front-ends, map); **reuse the
