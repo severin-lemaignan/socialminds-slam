@@ -1,0 +1,5 @@
+# Sensor-set ablation config (harness.sensor_matrix): scan-imu
+rig: {source: bag}
+sensors:
+  scans: [{topic: /scan}]
+  imus: [{gyro_topic: /d400/gyro/sample, accel_topic: /d400/accel/sample}]

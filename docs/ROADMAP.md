@@ -72,8 +72,11 @@ ground truth within tolerance, in CI (GTSAM built CPU-only).
   multi-lidar fusion through per-sensor extrinsics; YAML run configs (ADR 0013).
 - ☑ **Full-3D migration** (ADR 0010 stages 1–3b): IMU attitude → tilt-compensated 3D
   fans, scan-to-submap registration against narrow-band TSDFs with an ICP degeneracy
-  guard, anchor-relative submaps + GTSAM pose graph. **Beats the planar parity gate:
-  ATE 0.039/0.055 m on cafe1-1/-2 (gate: 0.090/0.066) at 53× real time, p99 0.9 ms.**
+  guard, anchor-relative submaps + GTSAM pose graph. **Beat the planar parity gate at
+  stages 1+2** (ATE 0.039/0.055 m on cafe1-1/-2, gate: 0.090/0.066, 53× real time,
+  p99 0.9 ms). ⚠ The 2026-06-10 sensor-matrix benchmark measures cafe scan+imu at
+  0.164/0.150 m at HEAD — a parity regression introduced by a later (depth-era) tuning
+  round, not by loops/graph (A/B-excluded); bisect queued. Office: 0.019–0.106 m.
 - ☑ RGB-D depth registration (the 3D-source path): range-adaptive sampled clouds
   register against a separate coarser 3D field; wheel-odometry motion prior
   (`/odom`, ADR 0012 — the robot ships IMU-less; measured no-IMU cost ≈ 4 cm on

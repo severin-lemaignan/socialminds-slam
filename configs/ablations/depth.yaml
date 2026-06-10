@@ -1,0 +1,6 @@
+# Sensor-set ablation config (harness.sensor_matrix): depth
+rig: {source: bag}
+sensors:
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      every_nth: 3

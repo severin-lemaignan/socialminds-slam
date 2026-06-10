@@ -1,0 +1,8 @@
+# Sensor-set ablation config (harness.sensor_matrix): imu-odom-depth
+rig: {source: bag}
+sensors:
+  imus: [{gyro_topic: /d400/gyro/sample, accel_topic: /d400/accel/sample}]
+  odometry: [{topic: /odom}]
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      every_nth: 3

@@ -1,0 +1,5 @@
+# Sensor-set ablation config (harness.sensor_matrix): scan-odom
+rig: {source: bag}
+sensors:
+  scans: [{topic: /scan}]
+  odometry: [{topic: /odom}]
