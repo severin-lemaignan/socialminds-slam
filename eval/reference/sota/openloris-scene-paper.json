@@ -1,0 +1,137 @@
+{
+  "source": {
+    "title": "Are We Ready for Service Robots? The OpenLORIS-Scene Datasets for Lifelong SLAM",
+    "authors": "Shi, Li, Zhao, Tian, Tian, Long, Zhu, Song, Qiao, Song, Guo, Wang, Zhang, Qin, Yang, Wang, Chan, She",
+    "venue": "ICRA 2020",
+    "arxiv": "1911.05603v2",
+    "pdf": "docs/openloris-scene.pdf",
+    "extracted_from": "Fig. 2 (per-sequence), Fig. 3 (lifelong), Table III (re-localization); values are embedded vector text extracted verbatim with pdftotext"
+  },
+  "notes": {
+    "granularity": "All Fig. 2/3 values are PER-SCENE averages over that scene's sequences, weighted by sequence time span (CR) and pose-estimate count (ATE). The paper does not publish per-sequence numbers.",
+    "ate": "ATE RMSE in meters, computed only over poses the algorithm actually estimated, with ground truth interpolated to each estimate's timestamp. Low ATE with low CR means the algorithm tracked little but accurately - always read ATE jointly with CR.",
+    "cr": "CR (correct rate) is the fraction of the sequence time span with a correct pose estimate. Fig. 2 uses CR-infinity (no ATE threshold, i.e. plain tracking success). Fig. 3 uses CR with ATE threshold 1 m (office), 3 m (home, cafe), 5 m (corridor, market) and AOE threshold 30 deg.",
+    "sensors": "No tested algorithm uses the 2D lidars (those produced the ground truth). Inputs are color/fisheye cameras, RGB-D, IMU and wheel odometry."
+  },
+  "scenes": ["office", "corridor", "home", "cafe", "market"],
+  "per_sequence": {
+    "description": "Fig. 2 - each algorithm run independently on each sequence; per-scene weighted-average CR-infinity (percent) and ATE RMSE (m).",
+    "systems": [
+      {
+        "system": "ORB_SLAM2",
+        "input": "stereo fisheye",
+        "cr_pct": {"office": 99.9, "corridor": 36.3, "home": 43.7, "cafe": 82.7, "market": 13.3},
+        "ate_rmse_m": {"office": 0.520, "corridor": 2.983, "home": 1.114, "cafe": 3.807, "market": 1.015}
+      },
+      {
+        "system": "ORB_SLAM2",
+        "input": "RGB-D",
+        "cr_pct": {"office": 100.0, "corridor": 24.9, "home": 27.1, "cafe": 48.6, "market": 28.7},
+        "ate_rmse_m": {"office": 0.082, "corridor": 1.315, "home": 0.141, "cafe": 0.434, "market": 1.679}
+      },
+      {
+        "system": "DS-SLAM",
+        "input": "RGB-D",
+        "cr_pct": {"office": 77.7, "corridor": 12.0, "home": 9.4, "cafe": 16.6, "market": 44.6},
+        "ate_rmse_m": {"office": 0.069, "corridor": 1.147, "home": 0.114, "cafe": 0.199, "market": 2.274}
+      },
+      {
+        "system": "DSO",
+        "input": "RGB",
+        "cr_pct": {"office": 87.6, "corridor": 40.2, "home": 28.1, "cafe": 35.5, "market": 91.5},
+        "ate_rmse_m": {"office": 0.752, "corridor": 10.658, "home": 0.674, "cafe": 2.265, "market": 17.917}
+      },
+      {
+        "system": "VINS-Mono",
+        "input": "RGB+IMU",
+        "cr_pct": {"office": 75.8, "corridor": 70.1, "home": 95.2, "cafe": 90.2, "market": 90.6},
+        "ate_rmse_m": {"office": 0.193, "corridor": 3.413, "home": 0.541, "cafe": 0.486, "market": 1.664}
+      },
+      {
+        "system": "VINS-Mono",
+        "input": "fisheye+IMU",
+        "cr_pct": {"office": 81.2, "corridor": 40.4, "home": 96.2, "cafe": 95.2, "market": 92.5},
+        "ate_rmse_m": {"office": 0.166, "corridor": 3.015, "home": 0.501, "cafe": 0.251, "market": 3.459}
+      },
+      {
+        "system": "InfiniTAMv2",
+        "input": "RGB-D",
+        "cr_pct": {"office": 99.9, "corridor": 11.5, "home": 42.8, "cafe": 30.0, "market": 4.4},
+        "ate_rmse_m": {"office": 0.157, "corridor": 3.429, "home": 0.584, "cafe": 0.501, "market": 0.574}
+      },
+      {
+        "system": "ElasticFusion",
+        "input": "RGB-D",
+        "cr_pct": {"office": 100.0, "corridor": 100.0, "home": 100.0, "cafe": 100.0, "market": 100.0},
+        "ate_rmse_m": {"office": 0.126, "corridor": 17.759, "home": 1.452, "cafe": 0.818, "market": 10.863}
+      },
+      {
+        "system": "odometry",
+        "input": "wheel odometry",
+        "cr_pct": {"office": 99.9, "corridor": 100.0, "home": 100.0, "cafe": 99.9, "market": 99.9},
+        "ate_rmse_m": {"office": 0.067, "corridor": 1.377, "home": 0.187, "cafe": 0.346, "market": 4.261}
+      }
+    ]
+  },
+  "lifelong": {
+    "description": "Fig. 3 - sequences of a scene fed consecutively, re-localizing into the map of earlier sequences; per-scene average CR (percent, ATE/AOE-thresholded) and correct-pose ATE RMSE (m). DSO and ElasticFusion excluded (no re-localization support).",
+    "ate_threshold_m": {"office": 1.0, "corridor": 5.0, "home": 3.0, "cafe": 3.0, "market": 5.0},
+    "aoe_threshold_deg": 30,
+    "systems": [
+      {
+        "system": "ORB_SLAM2",
+        "input": "stereo fisheye",
+        "cr_pct": {"office": 10.8, "corridor": 2.2, "home": 8.4, "cafe": 7.4, "market": 6.3},
+        "ate_rmse_m": {"office": 0.074, "corridor": 0.440, "home": 0.760, "cafe": 0.100, "market": 0.983}
+      },
+      {
+        "system": "ORB_SLAM2",
+        "input": "RGB-D",
+        "cr_pct": {"office": 51.6, "corridor": 20.1, "home": 5.3, "cafe": 70.1, "market": 45.7},
+        "ate_rmse_m": {"office": 0.178, "corridor": 2.808, "home": 0.154, "cafe": 0.505, "market": 2.907}
+      },
+      {
+        "system": "DS-SLAM",
+        "input": "RGB-D",
+        "cr_pct": {"office": 28.6, "corridor": 1.5, "home": 1.3, "cafe": 46.7, "market": 7.7},
+        "ate_rmse_m": {"office": 0.090, "corridor": 0.135, "home": 0.135, "cafe": 0.546, "market": 1.100}
+      },
+      {
+        "system": "VINS-Mono",
+        "input": "RGB+IMU",
+        "cr_pct": {"office": 19.9, "corridor": 38.1, "home": 33.6, "cafe": 91.3, "market": 86.0},
+        "ate_rmse_m": {"office": 0.150, "corridor": 2.511, "home": 0.713, "cafe": 0.579, "market": 1.866}
+      },
+      {
+        "system": "VINS-Mono",
+        "input": "fisheye+IMU",
+        "cr_pct": {"office": 38.5, "corridor": 35.6, "home": 33.9, "cafe": 96.2, "market": 65.5},
+        "ate_rmse_m": {"office": 0.347, "corridor": 2.173, "home": 0.455, "cafe": 0.451, "market": 2.926}
+      },
+      {
+        "system": "InfiniTAMv2",
+        "input": "RGB-D",
+        "cr_pct": {"office": 8.6, "corridor": 1.0, "home": 12.4, "cafe": 2.2, "market": 0.0},
+        "ate_rmse_m": {"office": 0.133, "corridor": 1.124, "home": 0.271, "cafe": 0.620, "market": null}
+      }
+    ]
+  },
+  "relocalization": {
+    "description": "Table III - re-localization score C(0.3,inf)S(60)-R on office sequence pairs isolating one changing factor each. 1.0 = immediate correct re-localization, 0 = never re-localized; decays with time-to-relocalize (tau = 60 s).",
+    "pairs": {
+      "office-1,2": "changed viewpoint",
+      "office-2,4": "changed illumination",
+      "office-2,5": "low light",
+      "office-1,6": "changed objects",
+      "office-2,7": "people"
+    },
+    "systems": [
+      {"system": "ORB_SLAM2", "input": "stereo fisheye", "scores": {"office-1,2": 0, "office-2,4": 0, "office-2,5": 0, "office-1,6": 0.742, "office-2,7": 0.995}},
+      {"system": "ORB_SLAM2", "input": "RGB-D", "scores": {"office-1,2": 0, "office-2,4": 0.764, "office-2,5": 0, "office-1,6": 0.716, "office-2,7": 0.997}},
+      {"system": "DS-SLAM", "input": "RGB-D", "scores": {"office-1,2": 0, "office-2,4": 0, "office-2,5": 0, "office-1,6": 0.994, "office-2,7": 0.996}},
+      {"system": "VINS-Mono", "input": "RGB+IMU", "scores": {"office-1,2": 0, "office-2,4": 0, "office-2,5": 0, "office-1,6": 0.837, "office-2,7": 0}},
+      {"system": "VINS-Mono", "input": "fisheye+IMU", "scores": {"office-1,2": 0, "office-2,4": 0, "office-2,5": 0, "office-1,6": 0, "office-2,7": 0}},
+      {"system": "InfiniTAMv2", "input": "RGB-D", "scores": {"office-1,2": 0, "office-2,4": 0, "office-2,5": 0, "office-1,6": 0, "office-2,7": 0}}
+    ]
+  }
+}

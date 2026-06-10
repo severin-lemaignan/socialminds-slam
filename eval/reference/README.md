@@ -6,6 +6,10 @@ multi-GB datasets, **they are run externally — on the robot or a capable works
 in CI.** Their scored results are archived under [`baselines/`](baselines/) and compared in
 the benchmark report.
 
+Published results from the literature live under [`sota/`](sota/) — currently the
+OpenLORIS-Scene paper's numbers (ORB-SLAM2, VINS-Mono, DS-SLAM, …) on the exact sequences
+we benchmark on.
+
 ## Candidates
 
 | System | Why | Needs |
