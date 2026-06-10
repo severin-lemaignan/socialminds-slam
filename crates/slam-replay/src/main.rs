@@ -180,8 +180,14 @@ fn initial_state_from_tum(path: &Path) -> Result<InitialState> {
     })
 }
 
-/// Per-scan visualization hook (current scan + the estimate it produced).
-type ScanHook<'a> = &'a mut dyn FnMut(&LaserScan2D, &slam_types::StampedPose);
+/// An exteroceptive event handed to the visualization hook with its estimate.
+enum VizEvent<'a> {
+    Scan(&'a LaserScan2D),
+    Cloud(&'a slam_types::PointCloud),
+}
+
+/// Per-event visualization hook.
+type ScanHook<'a> = &'a mut dyn FnMut(&VizEvent<'_>, &slam_types::StampedPose);
 
 /// One time-stamped sensor event from any input stream.
 enum Event<'a> {
@@ -243,8 +249,12 @@ fn run_timed(
                 last_stamp = Some(est.stamp);
             }
             // Visualization hook, outside the per-event latency clock.
-            if let (Some(hook), Event::Scan(scan)) = (on_scan.as_mut(), event) {
-                hook(scan, &est);
+            if let Some(hook) = on_scan.as_mut() {
+                match event {
+                    Event::Scan(scan) => hook(&VizEvent::Scan(scan), &est),
+                    Event::Cloud(cloud) => hook(&VizEvent::Cloud(cloud), &est),
+                    Event::Imu(_) => {}
+                }
             }
         }
     }
@@ -586,30 +596,51 @@ fn main() -> Result<()> {
     let mut hook;
     let on_scan: Option<ScanHook<'_>> = match viz_sink.as_mut() {
         Some(viz) => {
-            hook = move |scan: &LaserScan2D, est: &slam_types::StampedPose| {
+            hook = move |event: &VizEvent<'_>, est: &slam_types::StampedPose| {
+                let frame = match event {
+                    VizEvent::Scan(scan) => scan.frame,
+                    VizEvent::Cloud(cloud) => cloud.frame,
+                };
                 let t_bs = viz_extrinsics
-                    .get(scan.frame.0 as usize)
+                    .get(frame.0 as usize)
                     .copied()
                     .unwrap_or_else(Pose::identity);
-                let world: Vec<[f32; 3]> = scan
-                    .ranges
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, &r)| {
-                        let r = r as f64;
-                        if !r.is_finite() || r < scan.range_min || r > scan.range_max {
-                            return None;
-                        }
-                        let a = scan.angle_min + i as f64 * scan.angle_increment;
-                        let p = est.pose.transform_point(t_bs.transform_point(Vec3::new(
-                            r * a.cos(),
-                            r * a.sin(),
-                            0.0,
-                        )));
-                        Some([p.x as f32, p.y as f32, p.z as f32])
-                    })
-                    .collect();
-                viz.log_scan(est.stamp.as_seconds(), &est.pose, world);
+                match event {
+                    VizEvent::Scan(scan) => {
+                        let world: Vec<[f32; 3]> = scan
+                            .ranges
+                            .iter()
+                            .enumerate()
+                            .filter_map(|(i, &r)| {
+                                let r = r as f64;
+                                if !r.is_finite() || r < scan.range_min || r > scan.range_max {
+                                    return None;
+                                }
+                                let a = scan.angle_min + i as f64 * scan.angle_increment;
+                                let p = est.pose.transform_point(t_bs.transform_point(Vec3::new(
+                                    r * a.cos(),
+                                    r * a.sin(),
+                                    0.0,
+                                )));
+                                Some([p.x as f32, p.y as f32, p.z as f32])
+                            })
+                            .collect();
+                        viz.log_scan(est.stamp.as_seconds(), &est.pose, world);
+                    }
+                    VizEvent::Cloud(cloud) => {
+                        // Downsample for display; the engine keeps the full cloud.
+                        let world: Vec<[f32; 3]> = cloud
+                            .points
+                            .iter()
+                            .step_by(4)
+                            .map(|&q| {
+                                let p = est.pose.transform_point(t_bs.transform_point(q));
+                                [p.x as f32, p.y as f32, p.z as f32]
+                            })
+                            .collect();
+                        viz.log_cloud(est.stamp.as_seconds(), world);
+                    }
+                }
             };
             Some(&mut hook)
         }

@@ -51,6 +51,19 @@ pub struct ScanToMapConfig {
     /// and gives passing people hundreds of chances to become ghosts.
     pub integrate_translation: f64,
     pub integrate_rotation: f64,
+    /// Depth points within this distance (m) of an observed laser plane height are
+    /// fused into the **2D registration field** too: they measure the same slice the
+    /// laser scans (a person occluding the laser no longer erases the wall behind
+    /// them from the scan matcher's world). Geometry at other heights stays out — the
+    /// laser can never confirm it. **Default 0 (off)**: measured on cafe1-1, un-masked
+    /// people at head height (≈ the laser plane) degrade the scan matcher 0.164→0.357;
+    /// enable (≈ 0.15) together with dynamics masking, like `depth_updates_pose`.
+    pub reg_band_tolerance: f64,
+    /// When false (the current default), depth clouds fuse into the map and the
+    /// 2D laser band but do **not** correct the pose: un-masked dynamics (people)
+    /// dominate indoor depth views and drag the solve. Flips on when dynamics
+    /// masking lands (ADR 0002).
+    pub depth_updates_pose: bool,
     /// Cap on cloud points used per registration solve (deterministic subsample) —
     /// accuracy saturates long before a full VGA back-projection's 6 k points, and the
     /// trilinear sampling cost is linear in points.
@@ -95,6 +108,8 @@ impl Default for ScanToMapConfig {
             attitude: AttitudeConfig::default(),
             integrate_translation: 0.1,
             integrate_rotation: 0.1,
+            reg_band_tolerance: 0.0,
+            depth_updates_pose: false,
             max_registration_points: 1500,
             submap_extent: 20.0,
             submap_overlap_scans: 40,
@@ -150,8 +165,12 @@ pub struct ScanToMapOdometry {
     frozen: Vec<(Se2, SparseTsdf)>,
     /// Verified loop closures, in detection order (the pose-graph's future edges).
     loops: Vec<LoopClosure>,
-    /// Pose of the last map fusion (the integration keyframe diet).
+    /// Gravity-frame plane height of each lidar frame seen (for the depth band).
+    lidar_planes: Vec<(FrameId, f64)>,
+    /// Pose of the last map fusion, per modality (a shared threshold lets the 40 Hz
+    /// scans starve the ~10 Hz clouds of integration entirely).
     last_integrated: Option<Se2>,
+    last_integrated_cloud: Option<Se2>,
     /// Current base pose in the odometry (anchor-relative, gravity-aligned) frame.
     current: Se2,
     last_motion: Se2,
@@ -195,7 +214,9 @@ impl ScanToMapOdometry {
             overlap_left: 0,
             frozen: Vec::new(),
             loops: Vec::new(),
+            lidar_planes: Vec::new(),
             last_integrated: None,
+            last_integrated_cloud: None,
             current: Se2::identity(),
             last_motion: Se2::identity(),
             last_motion_dt: 0.0,
@@ -334,13 +355,14 @@ impl ScanToMapOdometry {
             prev.integrate_points(origin, &self.world);
         }
 
+        let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
+        self.world.clear();
         if update_reg {
+            // Planar scan: everything except floor hits is slice content.
             let gate_floor = self.attitude.is_initialized()
                 && self.attitude.tilt().rotate(sensor_origin_base).z
                     > 2.0 * self.cfg.floor_clearance;
             let z_min = self.cfg.floor_clearance;
-            let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
-            self.world.clear();
             self.world.extend(self.lifted.iter().filter_map(|&p| {
                 if gate_floor && p.z < z_min {
                     return None;
@@ -348,6 +370,22 @@ impl ScanToMapOdometry {
                 let q = Self::apply_planar(&pose, p);
                 Some(Vec3::new(q.x, q.y, 0.0))
             }));
+        } else if !self.lidar_planes.is_empty() {
+            // Depth cloud: only points inside a laser plane's band measure the slice
+            // the scan matcher registers against (step 1; step 2 — hybrid per-point
+            // 3D/2D fan registration — is the planned successor, see ADR 0010).
+            let tol = self.cfg.reg_band_tolerance;
+            let planes = &self.lidar_planes;
+            let world = &mut self.world;
+            world.extend(self.lifted.iter().filter_map(|&p| {
+                if !planes.iter().any(|&(_, z)| (p.z - z).abs() <= tol) {
+                    return None;
+                }
+                let q = Self::apply_planar(&pose, p);
+                Some(Vec3::new(q.x, q.y, 0.0))
+            }));
+        }
+        if !self.world.is_empty() {
             self.reg.integrate_points(flat_origin, &self.world);
             if let Some(prev) = &mut self.prev_reg {
                 prev.integrate_points(flat_origin, &self.world);
@@ -418,7 +456,12 @@ impl ScanToMapOdometry {
         self.submap_travel += self.last_motion.translation_norm();
         self.last_stamp = Some(stamp);
 
-        let due = match self.last_integrated {
+        let last = if update_reg {
+            self.last_integrated
+        } else {
+            self.last_integrated_cloud
+        };
+        let due = match last {
             None => true,
             Some(li) => {
                 let d = li.inverse().compose(&self.current);
@@ -431,7 +474,11 @@ impl ScanToMapOdometry {
                 self.try_loop_closure();
             }
             self.integrate(self.current, sensor_origin, update_reg);
-            self.last_integrated = Some(self.current);
+            if update_reg {
+                self.last_integrated = Some(self.current);
+            } else {
+                self.last_integrated_cloud = Some(self.current);
+            }
             self.maybe_spawn_submap();
         }
     }
@@ -660,6 +707,10 @@ impl SlamSystem for ScanToMapOdometry {
             return;
         }
         let sensor_origin = self.attitude.tilt().rotate(extrinsic.translation());
+        match self.lidar_planes.iter_mut().find(|(f, _)| *f == scan.frame) {
+            Some(entry) => entry.1 = sensor_origin.z,
+            None => self.lidar_planes.push((scan.frame, sensor_origin.z)),
+        }
 
         // First measurement of the run: the map is empty — seed it.
         if self.last_stamp.is_none() {
@@ -694,13 +745,29 @@ impl SlamSystem for ScanToMapOdometry {
         if self.last_stamp.is_none() {
             self.last_stamp = Some(cloud.stamp);
             self.integrate(self.current, sensor_origin, false);
-            self.last_integrated = Some(self.current);
+            self.last_integrated_cloud = Some(self.current);
             return;
         }
 
-        let predicted = self.predict(cloud.stamp);
-        let result = self.register_3d(predicted);
-        self.apply_registration(cloud.stamp, sensor_origin, predicted, result, false);
+        if self.cfg.depth_updates_pose {
+            let predicted = self.predict(cloud.stamp);
+            let result = self.register_3d(predicted);
+            self.apply_registration(cloud.stamp, sensor_origin, predicted, result, false);
+            return;
+        }
+        // Map-only mode: fuse at the (scan-corrected) pose on the cloud's own diet.
+        let due = match self.last_integrated_cloud {
+            None => true,
+            Some(li) => {
+                let d = li.inverse().compose(&self.current);
+                d.translation_norm() > self.cfg.integrate_translation
+                    || d.theta.abs() > self.cfg.integrate_rotation
+            }
+        };
+        if due {
+            self.integrate(self.current, sensor_origin, false);
+            self.last_integrated_cloud = Some(self.current);
+        }
     }
 
     fn current_estimate(&self) -> Option<StampedPose> {

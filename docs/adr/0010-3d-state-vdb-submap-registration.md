@@ -136,6 +136,17 @@ Decision 1.
   in-process VDB grids — reMap currently runs 10 cm cells but adjusts easily, so SLAM
   owns the resolution); the **1–2 GB map RAM budget is confirmed**; **< 1 s is the hard
   upper bound** for verified re-localization.
+- **Refinement (2026-06-10, M4):** registration *fields* are per-modality over the one
+  shared 3D map product: the laser registers against a gravity-plane 2D projection of
+  its own slice (a fan is a 1D curve in 3D — outside the cameras' frustum/range the 3D
+  field is an unsupportable thin ribbon), depth registers against the 3D field in full
+  trilinear. Two gated bridges exist, both off until dynamics masking (ADR 0002) lands,
+  because un-masked people dominate indoor depth: depth→pose corrections
+  (`depth_updates_pose`) and depth's laser-band slice feeding the 2D field
+  (`reg_band_tolerance`, measured 0.164→0.357 on cafe1-1 when enabled un-masked).
+  **Planned successor:** hybrid per-point fan registration — 3D field where stencils
+  are complete (camera-covered), 2D fallback elsewhere; the 2D field fades as RGB-D
+  coverage grows.
 - **Revisit when:** RGB-D lands (does depth fuse into the same 5 cm submaps or a finer
   local grid?).
 

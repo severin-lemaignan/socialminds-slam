@@ -30,6 +30,9 @@ mod real {
         chunk: Vec<[f32; 3]>,
         scans_seen: usize,
         chunks_logged: usize,
+        cloud_chunk: Vec<[f32; 3]>,
+        clouds_seen: usize,
+        cloud_chunks_logged: usize,
     }
 
     impl Viz {
@@ -49,6 +52,9 @@ mod real {
                 chunk: Vec::new(),
                 scans_seen: 0,
                 chunks_logged: 0,
+                cloud_chunk: Vec::new(),
+                clouds_seen: 0,
+                cloud_chunks_logged: 0,
             })
         }
 
@@ -98,6 +104,29 @@ mod real {
                         .with_radii([0.012]),
                 );
                 self.chunks_logged += 1;
+            }
+        }
+
+        /// One depth cloud: the live frame plus an accumulating 3D map layer
+        /// (chunked like the scan layer, under `world/map3d/`).
+        pub fn log_cloud(&mut self, stamp_s: f64, world: Vec<[f32; 3]>) {
+            self.rec.set_duration_secs("sensor_time", stamp_s);
+            let _ = self.rec.log(
+                "world/depth",
+                &rerun::Points3D::new(world.iter().copied())
+                    .with_colors([rerun::Color::from_rgb(240, 170, 60)])
+                    .with_radii([0.01]),
+            );
+            self.cloud_chunk.extend(world);
+            self.clouds_seen += 1;
+            if self.clouds_seen.is_multiple_of(CHUNK_SCANS) {
+                let _ = self.rec.log(
+                    format!("world/map3d/chunk_{:05}", self.cloud_chunks_logged),
+                    &rerun::Points3D::new(self.cloud_chunk.drain(..))
+                        .with_colors([rerun::Color::from_rgb(120, 140, 120)])
+                        .with_radii([0.008]),
+                );
+                self.cloud_chunks_logged += 1;
             }
         }
 
@@ -157,6 +186,8 @@ mod stub {
         pub fn log_groundtruth(&self, _traj: &Trajectory) {}
 
         pub fn log_scan(&mut self, _stamp_s: f64, _pose: &Pose, _world: Vec<[f32; 3]>) {}
+
+        pub fn log_cloud(&mut self, _stamp_s: f64, _world: Vec<[f32; 3]>) {}
 
         pub fn log_tsdf(&self, _map: &dyn slam_map::TsdfMap, _stamp_s: f64) {}
     }
