@@ -10,5 +10,4 @@ sensors:
       accel_topic: /d400/accel/sample
   depth:
     - topic: /d400/aligned_depth_to_color/image_raw
-      stride: 4
       every_nth: 3

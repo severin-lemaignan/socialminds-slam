@@ -33,10 +33,24 @@ pub struct Intrinsics {
 }
 
 /// Depth → cloud conversion tuning.
+///
+/// Sampling is **range-adaptive**: the projected spacing of kept pixels on the surface
+/// is `stride·z/fx`, so a *fixed* stride oversamples near range and — fatally —
+/// undersamples far range, where the integrated TSDF band degenerates into isolated
+/// clumps no interpolation stencil can use (measured: market aisles at 4–6 m read
+/// 0 matched / 2047 coasted at fixed stride 4 with 2.5 cm voxels). Instead, each
+/// pixel's local stride is chosen so the spacing stays ≈ `target_spacing` at its own
+/// depth: `s(z) = clamp(target_spacing·fx/z, min_stride, ∞)`, quantised to powers of
+/// two of `min_stride` so kept pixels form locally regular grids.
 #[derive(Debug, Clone)]
 pub struct DepthConfig {
-    /// Keep every `stride`-th pixel in u and v (e.g. 8 → ~6 k points from VGA).
-    pub stride: usize,
+    /// Desired sample spacing on the surface (m). Match the 3D field's voxel size.
+    pub target_spacing: f64,
+    /// Finest pixel stride (near-range floor; bounds the point count).
+    pub min_stride: usize,
+    /// Hard cap per cloud: above it, the cloud is uniformly re-decimated (memory and
+    /// integration cost stay bounded on pathological all-far frames).
+    pub max_points: usize,
     /// Range clip (m): RealSense depth is noise beyond a few metres.
     pub min_range: f64,
     pub max_range: f64,
@@ -45,12 +59,9 @@ pub struct DepthConfig {
 impl Default for DepthConfig {
     fn default() -> Self {
         DepthConfig {
-            // The stride must keep the projected sample spacing *under* the map's
-            // voxel size or the integrated surface degenerates into isolated clumps
-            // no interpolation stencil can use: stride·z/fx ≤ voxel. At 848-wide
-            // RealSense (fx ≈ 420) and 2.5 cm voxels, stride 4 holds to z ≈ 2.6 m
-            // and degrades gracefully beyond.
-            stride: 4,
+            target_spacing: 0.05,
+            min_stride: 2,
+            max_points: 20_000,
             min_range: 0.3,
             max_range: 6.0,
         }
@@ -168,23 +179,43 @@ pub fn parse_depth_image(
         return Err(BagError::Format("depth image size mismatch"));
     }
 
-    let mut points = Vec::with_capacity((width / cfg.stride + 1) * (height / cfg.stride + 1));
-    let mut v = cfg.stride / 2;
+    let base = cfg.min_stride.max(1);
+    let mut points = Vec::with_capacity(4096);
+    let mut v = 0;
     while v < height {
         let row = v * step;
-        let mut u = cfg.stride / 2;
+        let mut u = 0;
         while u < width {
             let z = depth_at(pixels, row + u * bpp);
             if z.is_finite() && z >= cfg.min_range && z <= cfg.max_range {
-                points.push(Vec3::new(
-                    (u as f64 - intrinsics.cx) / intrinsics.fx * z,
-                    (v as f64 - intrinsics.cy) / intrinsics.fy * z,
-                    z,
-                ));
+                // Local stride for this depth, as a power-of-two multiple of the base
+                // grid: keep the pixel only when it sits on its own stride's lattice,
+                // so kept pixels form locally regular grids matched to their range.
+                let needed = (cfg.target_spacing * intrinsics.fx / z).max(base as f64);
+                let mut k = base;
+                while ((k * 2) as f64) <= needed {
+                    k *= 2;
+                }
+                if u % k == 0 && v % k == 0 {
+                    points.push(Vec3::new(
+                        (u as f64 - intrinsics.cx) / intrinsics.fx * z,
+                        (v as f64 - intrinsics.cy) / intrinsics.fy * z,
+                        z,
+                    ));
+                }
             }
-            u += cfg.stride;
+            u += base;
         }
-        v += cfg.stride;
+        v += base;
+    }
+    if points.len() > cfg.max_points {
+        let keep_every = points.len().div_ceil(cfg.max_points);
+        let mut i = 0;
+        points.retain(|_| {
+            let keep = i % keep_every == 0;
+            i += 1;
+            keep
+        });
     }
 
     Ok((
@@ -251,8 +282,10 @@ mod tests {
     }
 
     #[test]
-    fn depth_backprojects_strided_in_range_pixels() {
-        // 4×4 image, fx=fy=2, cx=cy=2; stride 2 keeps pixels (1,1),(3,1),(1,3),(3,3).
+    fn depth_backprojects_in_range_pixels() {
+        // 4×4 image, fx=fy=2, cx=cy=2. With target_spacing tiny, every base-grid
+        // pixel in range is kept: (0,0)=invalid 0, (2,0)=4 m (clipped), (0,2)=1 m,
+        // (2,2)=2 m.
         let k = Intrinsics {
             fx: 2.0,
             fy: 2.0,
@@ -260,31 +293,83 @@ mod tests {
             cy: 2.0,
         };
         let cfg = DepthConfig {
-            stride: 2,
+            target_spacing: 1e-6,
+            min_stride: 2,
+            max_points: 100,
             min_range: 0.5,
             max_range: 3.0,
         };
-        // Row-major depths (mm): pixel (1,1)=1000, (3,1)=4000 (clipped), (1,3)=2000,
-        // (3,3)=0 (invalid).
         let mut mm = [0u16; 16];
-        mm[4 + 1] = 1000;
-        mm[4 + 3] = 4000;
-        mm[3 * 4 + 1] = 2000;
+        mm[2] = 4000; // (u=2, v=0): clipped
+        mm[2 * 4] = 1000; // (u=0, v=2): 1 m
+        mm[2 * 4 + 2] = 2000; // (u=2, v=2): 2 m
         let body = encode_depth_16u("d400_color", 4, 4, &mm);
         let (cloud, frame) = parse_depth_image(&body, &k, &cfg).unwrap();
         assert_eq!(frame, "d400_color");
         assert_eq!(cloud.stamp.as_nanos(), 100_000_000_500);
         assert_eq!(cloud.points.len(), 2);
-        // (1,1) at 1 m: ((1−2)/2·1, (1−2)/2·1, 1) = (−0.5, −0.5, 1).
+        // (0,2) at 1 m: ((0−2)/2·1, (2−2)/2·1, 1) = (−1, 0, 1).
         let p = cloud.points[0];
-        assert!(
-            (p.x + 0.5).abs() < 1e-12 && (p.y + 0.5).abs() < 1e-12 && (p.z - 1.0).abs() < 1e-12
-        );
-        // (1,3) at 2 m: ((1−2)/2·2, (3−2)/2·2, 2) = (−1, 1, 2).
+        assert!((p.x + 1.0).abs() < 1e-12 && p.y.abs() < 1e-12 && (p.z - 1.0).abs() < 1e-12);
+        // (2,2) at 2 m: (0, 0, 2).
         let q = cloud.points[1];
-        assert!(
-            (q.x + 1.0).abs() < 1e-12 && (q.y - 1.0).abs() < 1e-12 && (q.z - 2.0).abs() < 1e-12
-        );
+        assert!(q.x.abs() < 1e-12 && q.y.abs() < 1e-12 && (q.z - 2.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn sampling_is_range_adaptive() {
+        // fx = 100, target spacing 0.05 m → required stride: 10 px at z=0.5 m
+        // (lattice 8 with base 2), 2.5 px at z=2 m (lattice 2). A 16×16 image split:
+        // left half near (0.5 m), right half far (2 m) — the far half must yield
+        // ~(8/2)² = 16 points, the near half only ~(16/8)·(16/8)/2... measured by
+        // counting kept points per half.
+        let k = Intrinsics {
+            fx: 100.0,
+            fy: 100.0,
+            cx: 8.0,
+            cy: 8.0,
+        };
+        let cfg = DepthConfig {
+            target_spacing: 0.05,
+            min_stride: 2,
+            max_points: 10_000,
+            min_range: 0.1,
+            max_range: 6.0,
+        };
+        let mut mm = [0u16; 256];
+        for v in 0..16 {
+            for u in 0..16 {
+                mm[v * 16 + u] = if u < 8 { 500 } else { 2000 };
+            }
+        }
+        let body = encode_depth_16u("f", 16, 16, &mm);
+        let (cloud, _) = parse_depth_image(&body, &k, &cfg).unwrap();
+        let near = cloud.points.iter().filter(|p| p.z < 1.0).count();
+        let far = cloud.points.iter().filter(|p| p.z > 1.0).count();
+        // Far half sampled at lattice 2 → 8×4 columns... at least 4× denser than near.
+        assert!(far >= 4 * near.max(1), "near={near} far={far}");
+        assert!(near >= 1 && far >= 12, "near={near} far={far}");
+    }
+
+    #[test]
+    fn point_cap_bounds_pathological_frames() {
+        let k = Intrinsics {
+            fx: 100.0,
+            fy: 100.0,
+            cx: 8.0,
+            cy: 8.0,
+        };
+        let cfg = DepthConfig {
+            target_spacing: 1e-6,
+            min_stride: 1,
+            max_points: 20,
+            min_range: 0.1,
+            max_range: 6.0,
+        };
+        let mm = [2000u16; 256];
+        let body = encode_depth_16u("f", 16, 16, &mm);
+        let (cloud, _) = parse_depth_image(&body, &k, &cfg).unwrap();
+        assert!(cloud.points.len() <= 20, "{}", cloud.points.len());
     }
 
     #[test]

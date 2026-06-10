@@ -421,7 +421,9 @@ fn load_bag_inputs_from_config(
     let mut clouds: Vec<slam_types::PointCloud> = Vec::new();
     for d in &cfg.sensors.depth {
         let depth_cfg = slam_datasets::DepthConfig {
-            stride: d.stride,
+            target_spacing: d.target_spacing,
+            min_stride: d.min_stride,
+            max_points: d.max_points,
             min_range: d.min_range,
             max_range: d.max_range,
         };

@@ -25,7 +25,14 @@ use crate::se2::Se2;
 /// Tuning for [`ScanToMapOdometry`].
 #[derive(Debug, Clone)]
 pub struct ScanToMapConfig {
+    /// The **2D laser registration field** (gravity-plane projection). Fine voxels:
+    /// scan accuracy is parity-gated against PLICP (ADR 0010).
     pub tsdf: TsdfConfig,
+    /// The **3D field** (map product + depth registration + depth loop closure).
+    /// Coarser than the 2D field: RealSense depth error at range (≈ 2–6 % of z)
+    /// dwarfs fine voxels, and a coarser grid is what makes range-adaptive depth
+    /// sampling stencil-supportable at bounded point counts.
+    pub tsdf_3d: TsdfConfig,
     /// Gauss-Newton iterations per scan.
     pub max_iterations: usize,
     /// Converged when one step moves less than this (m / rad).
@@ -98,6 +105,15 @@ impl Default for ScanToMapConfig {
             tsdf: slam_map::TsdfConfig {
                 voxel_size: 0.025,
                 truncation: 0.075,
+                max_weight: 100000.0,
+            },
+            // 5 cm / 15 cm: the swept trade-off (see commit). Finer fields score
+            // better open-loop near-range (2.5 cm: 0.46 vs 0.81 on cafe depth-only)
+            // but their narrow truncation basin never verifies depth loop closures
+            // and coasts at range; 5 cm tracks market, verifies loops, barely coasts.
+            tsdf_3d: slam_map::TsdfConfig {
+                voxel_size: 0.05,
+                truncation: 0.15,
                 max_weight: 100000.0,
             },
             max_iterations: 12,
@@ -237,7 +253,7 @@ impl ScanToMapOdometry {
     /// Multi-lidar: `extrinsics[frame.0]` = SE(3) `T_base_sensor` per rig frame.
     pub fn with_extrinsics(base: Pose, cfg: ScanToMapConfig, extrinsics: Vec<Pose>) -> Self {
         let attitude = AttitudeFilter::new(cfg.attitude.clone());
-        let map = SparseTsdf::new(cfg.tsdf.clone());
+        let map = SparseTsdf::new(cfg.tsdf_3d.clone());
         let reg = SparseTsdf::new(cfg.tsdf.clone());
         ScanToMapOdometry {
             cfg,
@@ -477,7 +493,7 @@ impl ScanToMapOdometry {
     /// displacement — a tight loop never moves far from its centre).
     fn maybe_spawn_submap(&mut self) {
         if self.submap_travel > self.cfg.submap_extent && self.prev_map.is_none() {
-            let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
+            let fresh = SparseTsdf::new(self.cfg.tsdf_3d.clone());
             self.prev_map = Some(std::mem::replace(&mut self.map, fresh));
             let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
             self.prev_reg = Some(std::mem::replace(&mut self.reg, fresh));
@@ -622,7 +638,7 @@ impl ScanToMapOdometry {
             None => (&self.map, self.submap_birth),
         };
         let initial = anchor.inverse().compose(&initial);
-        let band = self.cfg.tsdf.truncation * 0.9;
+        let band = self.cfg.tsdf_3d.truncation * 0.9;
         let mut transform = initial;
         let mut inlier_fraction = 0.0;
         let mut h_translation = [0.0; 3];
@@ -684,10 +700,15 @@ impl ScanToMapOdometry {
     /// acceptance the pose snaps to the verified one — the full graph optimisation
     /// (GTSAM, stage 3b) will distribute the correction instead.
     fn try_loop_closure(&mut self) {
-        let band = self.cfg.tsdf.truncation * 0.9;
         let active_submap = self.frozen.len();
         let mut best: Option<LoopClosure> = None;
         let as_cloud = self.lifted_is_cloud;
+        // Verification band follows the field being verified against.
+        let band = if as_cloud {
+            self.cfg.tsdf_3d.truncation * 0.9
+        } else {
+            self.cfg.tsdf.truncation * 0.9
+        };
         let stride = if as_cloud {
             (self.lifted.len() / self.cfg.max_registration_points).max(1)
         } else {

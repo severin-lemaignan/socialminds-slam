@@ -95,10 +95,16 @@ pub struct DepthSensor {
     pub topic: String,
     /// Defaults to the sibling `…/camera_info` of `topic`.
     pub camera_info: Option<String>,
-    /// Pixel stride: keep `stride·z/fx ≤ voxel` or the integrated surface degenerates
-    /// into clumps no interpolation stencil can use.
-    #[serde(default = "default_stride")]
-    pub stride: usize,
+    /// Range-adaptive sampling target: kept pixels are spaced ≈ this on the surface
+    /// at every depth (match the 3D field's voxel size).
+    #[serde(default = "default_target_spacing")]
+    pub target_spacing: f64,
+    /// Finest pixel stride (near-range floor).
+    #[serde(default = "default_min_stride")]
+    pub min_stride: usize,
+    /// Per-cloud point cap (uniform re-decimation above it).
+    #[serde(default = "default_max_points")]
+    pub max_points: usize,
     #[serde(default = "default_min_range")]
     pub min_range: f64,
     #[serde(default = "default_max_range")]
@@ -108,8 +114,14 @@ pub struct DepthSensor {
     pub every_nth: usize,
 }
 
-fn default_stride() -> usize {
-    4
+fn default_target_spacing() -> f64 {
+    0.05
+}
+fn default_min_stride() -> usize {
+    2
+}
+fn default_max_points() -> usize {
+    20_000
 }
 fn default_min_range() -> f64 {
     0.3
@@ -178,10 +190,10 @@ sensors:
       accel_topic: /d400/accel/sample
   depth:
     - topic: /d400/aligned_depth_to_color/image_raw
-      stride: 4
       every_nth: 3
 "#;
         let cfg: RunConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.sensors.depth[0].target_spacing, 0.05); // default
         assert_eq!(cfg.rig.source, RigSource::Bag);
         assert_eq!(cfg.sensors.scans[0].topic, "/scan");
         assert_eq!(

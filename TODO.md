@@ -19,11 +19,18 @@ motivate an item are noted inline.
 
 ## Front-end / registration
 
-- [ ] **Range-adaptive depth sampling**: market1-1 depth+IMU reads 0 matched / 2047
-      coasted — aisle ranges 4–6 m put stride-4 sample spacing (5.7 cm) above the
-      2.5 cm voxel, so the integrated surface is unsupportable clumps (cafe works
-      because it is close-range). Finer pixel stride at distance, or per-range voxel
-      sizing; then first real market odometry numbers.
+- [x] **Range-adaptive depth sampling** — kept pixels spaced ≈ `target_spacing` at
+      every depth (power-of-two local lattices, per-cloud point cap), plus a separate
+      coarser 3D-field voxel (5 cm / 15 cm truncation vs the 2 D laser field's 2.5 cm).
+      Market1-1 depth+odom+IMU now tracks: **ATE 4.38 m** over the 150–220 m loop
+      (was frozen; paper's wheel-odom baseline: 4.26), 2034/2047 matched, 26× RT;
+      depth loop closure verifies (5 closures on cafe). Swept trade-off recorded in
+      code: finer 3D fields score better open-loop near-range (2.5 cm → 0.46 vs 0.81
+      on cafe depth-only) but their narrow truncation basin kills loop verification.
+- [ ] **Depth loop-closure basin**: loop seeds must land inside the 3D field's
+      truncation (15 cm) — a coarse-to-fine seed pyramid (or scan-context-style
+      pre-alignment) would decouple verification from the field's voxel size and let
+      a finer field recover the near-range accuracy.
 - [ ] **Hybrid per-point fan registration** (ADR 0010 refinement note): laser fans
       register against the 3D field where trilinear stencils are complete
       (camera-covered regions), 2D-field fallback elsewhere; the 2D field fades as
@@ -32,10 +39,7 @@ motivate an item are noted inline.
       (`--odom-topic`, config `sensors.odometry`). Measured: depth-only cafe1-1
       2.8 m → **0.456 m** with the odom prior (558/569 clouds matched). Still open:
       odometry as a graph factor and as a standalone baseline in the harness.
-- [ ] **Depth loop closure**: clouds now verify against frozen *3D* fields
-      (machinery in place, `--loop-min-inliers` knob), but verification never fires —
-      same strided-coverage physics as the market issue above; unblocked by
-      range-adaptive sampling.
+
 - [ ] Photometric/colored registration — *research note only*: illumination variance
       is the hard part; lifelong-SLAM evidence favours learned features over raw RGB.
 
