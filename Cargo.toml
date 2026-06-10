@@ -8,6 +8,7 @@ members = [
     "crates/slam-gtsam-sys",
     "crates/slam-backend",
     "crates/slam-frontend-scan",
+    "crates/slam-rig",
 ]
 
 [workspace.package]
@@ -30,6 +31,8 @@ clap = { version = "4", features = ["derive"] }
 cxx = "1"
 # Data parallelism (ADR 0001 survey).
 rayon = "1"
+# URDF parsing — the robot's kinematic model is the primary extrinsics source (ADR 0009).
+urdf-rs = "0.9"
 
 # Internal crates
 slam-types = { path = "crates/slam-types" }
@@ -38,6 +41,7 @@ slam-gtsam-sys = { path = "crates/slam-gtsam-sys" }
 slam-backend = { path = "crates/slam-backend" }
 slam-frontend-scan = { path = "crates/slam-frontend-scan" }
 slam-datasets = { path = "crates/slam-datasets" }
+slam-rig = { path = "crates/slam-rig" }
 
 [profile.release]
 lto = "thin"
