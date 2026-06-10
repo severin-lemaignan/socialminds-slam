@@ -13,7 +13,7 @@ motivate an item are noted inline.
       the two gated bridges (`depth_updates_pose`, `reg_band_tolerance`).
 - [ ] **Clean-3D-map project**: filter depth to remove outliers; post-hoc model
       filtering; … → target: a *compact* map suitable for downstream tasks like
-      semantic segmentation.
+      semantic segmentation. Plan drafted: [`docs/clean-map-plan.md`](docs/clean-map-plan.md).
 - [x] **No-IMU option** — analysed and contractual (ADR 0012); measured cost ≈ 4 cm
       on cafe1-1 (0.203 laser-only vs 0.164 with IMU); `configs/no-imu.yaml`.
 
