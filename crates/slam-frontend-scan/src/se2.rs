@@ -81,6 +81,19 @@ impl Se2 {
             Vec3::new(self.x, self.y, 0.0),
         )
     }
+
+    /// Project an SE(3) pose onto SE(2) (x, y, yaw), reporting how non-planar it was.
+    ///
+    /// Used on `T_base_sensor` extrinsics from the rig (ADR 0009): a 2D lidar is modelled
+    /// as scanning the base's motion plane, so its mounting roll/pitch must be ≈ 0. The
+    /// second value is the out-of-plane rotation magnitude (rad) — the caller decides
+    /// what tolerance deserves a warning. The z offset is dropped (planar geometry of
+    /// walls is height-invariant).
+    pub fn planar_projection_of(pose: &Pose) -> (Se2, f64) {
+        let (roll, pitch, yaw) = pose.rotation().to_rpy();
+        let t = pose.translation();
+        (Se2::new(t.x, t.y, yaw), roll.hypot(pitch))
+    }
 }
 
 #[cfg(test)]

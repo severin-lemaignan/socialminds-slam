@@ -1,0 +1,38 @@
+<?xml version="1.0"?>
+<!-- Mock of the target robot's rig (ADR 0009): an omnidirectional base with two planar
+     270°-FOV lidars at opposite corners (their FOVs jointly cover 360°), an RGB-D
+     camera, and a wheel behind a non-fixed joint (must NOT be part of the rigid rig). -->
+<robot name="mock_dual_lidar_robot">
+  <link name="base_link"/>
+  <link name="laser_front_left"/>
+  <link name="laser_rear_right"/>
+  <link name="camera_front"/>
+  <link name="wheel_left"/>
+
+  <!-- Front-left corner, looking outward at +45 deg. -->
+  <joint name="laser_front_left_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_front_left"/>
+    <origin xyz="0.31 0.22 0.18" rpy="0 0 0.7853981633974483"/>
+  </joint>
+
+  <!-- Rear-right corner, looking outward at +225 deg. -->
+  <joint name="laser_rear_right_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="laser_rear_right"/>
+    <origin xyz="-0.31 -0.22 0.18" rpy="0 0 3.9269908169872414"/>
+  </joint>
+
+  <joint name="camera_front_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_front"/>
+    <origin xyz="0.35 0 0.95" rpy="0 0 0"/>
+  </joint>
+
+  <joint name="wheel_left_joint" type="continuous">
+    <parent link="base_link"/>
+    <child link="wheel_left"/>
+    <origin xyz="0 0.25 0.05" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+  </joint>
+</robot>
