@@ -30,16 +30,33 @@ impl FrameId {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImuSample {
     pub stamp: Stamp,
-    /// Angular velocity ω (rad/s), body frame.
+    /// The sensor frame the rates/forces are expressed in ([`FrameId::BASE`] when
+    /// untagged). Robots may carry several IMUs at different mountings (ADR 0009/0010);
+    /// consumers rotate into the base frame through the rig extrinsic.
+    pub frame: FrameId,
+    /// Angular velocity ω (rad/s), sensor frame.
     pub gyro: Vec3,
-    /// Specific force / proper acceleration (m/s²), body frame.
+    /// Specific force / proper acceleration (m/s²), sensor frame.
     pub accel: Vec3,
 }
 
 impl ImuSample {
+    /// An untagged (base-frame) sample — the single-centred-IMU default.
     #[inline]
     pub fn new(stamp: Stamp, gyro: Vec3, accel: Vec3) -> Self {
-        ImuSample { stamp, gyro, accel }
+        ImuSample {
+            stamp,
+            frame: FrameId::BASE,
+            gyro,
+            accel,
+        }
+    }
+
+    /// The same measurement, tagged with the sensor frame it was taken in.
+    #[inline]
+    pub fn in_frame(mut self, frame: FrameId) -> Self {
+        self.frame = frame;
+        self
     }
 }
 

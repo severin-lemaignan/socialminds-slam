@@ -47,10 +47,27 @@ struct RunResult {
 /// Drive a straight line with pitch pulses; `feed_imu` selects compensated vs naive,
 /// `pitch_amp` = 0 is the clean reference, `noise` adds range noise + dropouts.
 fn drive_tilted(pitch_amp: f64, feed_imu: bool, noise: bool) -> RunResult {
+    drive_tilted_imu_mount(pitch_amp, feed_imu, noise, Rotation::identity())
+}
+
+/// Like [`drive_tilted`], with the IMU mounted at `imu_mount` (its own rig frame):
+/// samples are expressed in that frame and tagged with it — the engine must rotate
+/// them back through the extrinsic (multi-IMU rigs, ADR 0009).
+fn drive_tilted_imu_mount(
+    pitch_amp: f64,
+    feed_imu: bool,
+    noise: bool,
+    imu_mount: Rotation,
+) -> RunResult {
     let walls = world_25d();
     let t_base_sensor = Pose::new(Rotation::identity(), Vec3::new(0.0, 0.0, SENSOR_Z));
     let lidar = FrameId(1);
-    let extrinsics = vec![Pose::identity(), t_base_sensor];
+    let imu_frame = FrameId(2);
+    let extrinsics = vec![
+        Pose::identity(),
+        t_base_sensor,
+        Pose::new(imu_mount, Vec3::new(0.1, -0.05, 0.3)),
+    ];
 
     let step = Se2::new(0.06, 0.0, 0.0); // 1.2 m/s straight drive
     let mut truth = Se2::new(-4.5, -2.5, 0.25);
@@ -70,9 +87,18 @@ fn drive_tilted(pitch_amp: f64, feed_imu: bool, noise: bool) -> RunResult {
                 let ti = t - SCAN_DT + (j + 1) as f64 * SCAN_DT / IMU_RATE as f64;
                 let pitch = pitch_at(ti, pitch_amp);
                 let attitude = Rotation::from_rpy(0.0, pitch, 0.0);
-                let gyro = Vec3::new(0.0, pitch_rate_at(ti, pitch_amp), 0.0);
-                let accel = attitude.inverse().rotate(Vec3::new(0.0, 0.0, G));
-                odo.process_imu(&ImuSample::new(Stamp::from_seconds(ti), gyro, accel));
+                let gyro_base = Vec3::new(0.0, pitch_rate_at(ti, pitch_amp), 0.0);
+                let accel_base = attitude.inverse().rotate(Vec3::new(0.0, 0.0, G));
+                // Express in the IMU's own frame; the engine rotates it back.
+                let inv = imu_mount.inverse();
+                odo.process_imu(
+                    &ImuSample::new(
+                        Stamp::from_seconds(ti),
+                        inv.rotate(gyro_base),
+                        inv.rotate(accel_base),
+                    )
+                    .in_frame(imu_frame),
+                );
             }
         }
 
@@ -163,5 +189,19 @@ fn tilt_compensation_survives_range_noise_and_dropouts() {
         noisy.worst_dt,
         clean.worst_dt,
         noisy.stats
+    );
+}
+
+#[test]
+fn a_rotated_imu_mount_compensates_identically() {
+    let base_mounted = drive_tilted(PITCH_AMP, true, false);
+    // A gratuitously awkward mounting: yawed 90°, rolled upside down.
+    let mount = Rotation::from_rpy(PI, 0.0, PI / 2.0);
+    let rotated = drive_tilted_imu_mount(PITCH_AMP, true, false, mount);
+    assert!(
+        (rotated.worst_dt - base_mounted.worst_dt).abs() < 1e-6,
+        "rotated IMU mount changed compensation: {:.6} vs {:.6}",
+        rotated.worst_dt,
+        base_mounted.worst_dt
     );
 }

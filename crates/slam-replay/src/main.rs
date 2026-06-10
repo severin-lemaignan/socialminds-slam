@@ -47,9 +47,10 @@ struct Args {
     #[arg(long = "baseline", value_enum)]
     system: System,
 
-    /// IMU CSV input (`t gx gy gz ax ay az`).
-    #[arg(long, value_name = "FILE")]
-    imu: Option<PathBuf>,
+    /// IMU CSV input (`t gx gy gz ax ay az`). Repeatable for multi-IMU rigs; prefix
+    /// with the sensor's URDF link name (`FRAME=FILE`) — requires `--urdf`.
+    #[arg(long, value_name = "[FRAME=]FILE")]
+    imu: Vec<String>,
 
     /// Scan CSV input (`t angle_min angle_increment range_min range_max n r…`).
     /// Repeatable for multi-lidar; prefix with the sensor's URDF link name
@@ -255,14 +256,28 @@ fn load_bag_inputs(
 
     let mut streams = slam_datasets::read_streams_from_bag(bag, &imu_topics, &scan_topics)
         .with_context(|| format!("reading bag {}", bag.display()))?;
-    let imu = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
-        (Some(topic), _, _) => streams.imu.remove(topic.as_str()).unwrap_or_default(),
-        (_, Some(gyro), Some(accel)) => slam_datasets::merge_split_imu(
-            &streams.imu.remove(gyro.as_str()).unwrap_or_default(),
-            &streams.imu.remove(accel.as_str()).unwrap_or_default(),
+    let (mut imu, imu_topic) = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
+        (Some(topic), _, _) => (
+            streams.imu.remove(topic.as_str()).unwrap_or_default(),
+            Some(topic),
         ),
-        _ => Vec::new(),
+        (_, Some(gyro), Some(accel)) => (
+            slam_datasets::merge_split_imu(
+                &streams.imu.remove(gyro.as_str()).unwrap_or_default(),
+                &streams.imu.remove(accel.as_str()).unwrap_or_default(),
+            ),
+            Some(gyro),
+        ),
+        _ => (Vec::new(), None),
     };
+    if let (Some(rig), Some(topic)) = (rig, imu_topic) {
+        if let Some(frame_id) = streams.imu_frames.get(topic.as_str()) {
+            let frame = resolve_frame(rig, frame_id)?;
+            for s in &mut imu {
+                s.frame = frame;
+            }
+        }
+    }
     let scans = match &args.scan_topic {
         Some(topic) => {
             let mut scans = streams.scans.remove(topic.as_str()).unwrap_or_default();
@@ -284,19 +299,22 @@ fn load_bag_inputs(
     Ok((imu, scans))
 }
 
+/// Split a `[FRAME=]FILE` CSV spec and resolve the frame against the rig.
+fn frame_and_path(spec: &str, rig: Option<&SensorRig>, flag: &str) -> Result<(FrameId, PathBuf)> {
+    match spec.split_once('=') {
+        Some((name, file)) => match rig {
+            Some(rig) => Ok((resolve_frame(rig, name)?, PathBuf::from(file))),
+            None => bail!("--{flag} {name}=… needs --urdf to resolve the frame"),
+        },
+        None => Ok((FrameId::BASE, PathBuf::from(spec))),
+    }
+}
+
 /// Load and merge the `--scan [FRAME=]FILE` CSVs into one stamp-sorted stream.
 fn load_scan_csvs(specs: &[String], rig: Option<&SensorRig>) -> Result<Vec<LaserScan2D>> {
     let mut scans: Vec<LaserScan2D> = Vec::new();
     for spec in specs {
-        let (frame_name, path) = match spec.split_once('=') {
-            Some((frame, file)) => (Some(frame), PathBuf::from(file)),
-            None => (None, PathBuf::from(spec)),
-        };
-        let frame = match (frame_name, rig) {
-            (Some(name), Some(rig)) => resolve_frame(rig, name)?,
-            (Some(name), None) => bail!("--scan {name}=… needs --urdf to resolve the frame"),
-            (None, _) => FrameId::BASE,
-        };
+        let (frame, path) = frame_and_path(spec, rig, "scan")?;
         let file = std::fs::File::open(&path)
             .with_context(|| format!("opening scan file {}", path.display()))?;
         let mut stream = slam_types::read_scans(io::BufReader::new(file))
@@ -309,6 +327,21 @@ fn load_scan_csvs(specs: &[String], rig: Option<&SensorRig>) -> Result<Vec<Laser
     // Multi-lidar CSVs interleave; the event loop needs one time-ordered stream.
     scans.sort_by_key(|s| s.stamp);
     Ok(scans)
+}
+
+/// Load and merge the `--imu [FRAME=]FILE` CSVs into one stamp-sorted stream.
+fn load_imu_csvs(specs: &[String], rig: Option<&SensorRig>) -> Result<Vec<ImuSample>> {
+    let mut samples: Vec<ImuSample> = Vec::new();
+    for spec in specs {
+        let (frame, path) = frame_and_path(spec, rig, "imu")?;
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("opening IMU file {}", path.display()))?;
+        let stream = slam_types::read_imu(io::BufReader::new(file))
+            .with_context(|| format!("reading IMU file {}", path.display()))?;
+        samples.extend(stream.into_iter().map(|s| s.in_frame(frame)));
+    }
+    samples.sort_by_key(|s| s.stamp);
+    Ok(samples)
 }
 
 /// The rig's SE(3) extrinsics table for the scan front-end, warning on lidar frames
@@ -344,16 +377,10 @@ fn main() -> Result<()> {
     let (imu, scans): (Vec<ImuSample>, Vec<LaserScan2D>) = if let Some(bag) = &args.bag {
         load_bag_inputs(bag, &args, rig.as_ref())?
     } else {
-        let imu = match &args.imu {
-            Some(path) => {
-                let file = std::fs::File::open(path)
-                    .with_context(|| format!("opening IMU file {}", path.display()))?;
-                slam_types::read_imu(io::BufReader::new(file))
-                    .with_context(|| format!("reading IMU file {}", path.display()))?
-            }
-            None => Vec::new(),
-        };
-        (imu, load_scan_csvs(&args.scan, rig.as_ref())?)
+        (
+            load_imu_csvs(&args.imu, rig.as_ref())?,
+            load_scan_csvs(&args.scan, rig.as_ref())?,
+        )
     };
 
     // Each system needs its primary stream; running it on silence is a usage error.

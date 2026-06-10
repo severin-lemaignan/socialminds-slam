@@ -197,7 +197,13 @@ impl SlamSystem for ScanOdometry {
     }
 
     fn process_imu(&mut self, sample: &slam_types::ImuSample) {
-        self.attitude.process(sample);
+        // Multi-IMU rigs: rotate rates/forces into the base frame; an unknown frame is
+        // a mis-wired rig and is dropped, never guessed (ADR 0009).
+        if sample.frame == slam_types::FrameId::BASE {
+            self.attitude.process(sample);
+        } else if let Some(t) = self.extrinsic(sample.frame) {
+            self.attitude.process_in_frame(sample, &t);
+        }
     }
 
     fn process_scan(&mut self, scan: &LaserScan2D) {

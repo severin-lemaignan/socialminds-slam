@@ -96,6 +96,8 @@ pub struct BagStreams {
     /// `header.frame_id` of each scan topic (first message wins) — the URDF link name
     /// to resolve against the rig (ADR 0009).
     pub scan_frames: BTreeMap<String, String>,
+    /// Likewise for each IMU topic (multi-IMU rigs, ADR 0009).
+    pub imu_frames: BTreeMap<String, String>,
 }
 
 /// Resolve a (possibly auto-selected) topic request against the bag's connections.
@@ -182,11 +184,14 @@ pub fn read_streams_from_bag<P: AsRef<Path>>(
     let wanted: BTreeSet<u32> = targets.keys().copied().collect();
     bag.for_each_message(&wanted, |conn, data| {
         match targets.get(&conn) {
-            Some(Target::Imu(topic)) => out
-                .imu
-                .get_mut(topic)
-                .expect("stream pre-created")
-                .push(parse_imu(data)?),
+            Some(Target::Imu(topic)) => {
+                let (sample, frame_id) = parse_imu(data)?;
+                out.imu
+                    .get_mut(topic)
+                    .expect("stream pre-created")
+                    .push(sample);
+                out.imu_frames.entry(topic.clone()).or_insert(frame_id);
+            }
             Some(Target::Scan(topic)) => {
                 let (scan, frame_id) = parse_scan(data)?;
                 out.scans

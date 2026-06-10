@@ -63,8 +63,12 @@ impl<'a> LeCursor<'a> {
     }
 }
 
-/// Decode one `sensor_msgs/Imu` message body into an [`ImuSample`].
-pub fn parse_imu(data: &[u8]) -> Result<ImuSample, BagError> {
+/// Decode one `sensor_msgs/Imu` message body into an [`ImuSample`] plus the header's
+/// `frame_id` (the URDF link name, ADR 0009 — robots may carry several IMUs).
+///
+/// The returned sample's `frame` is [`slam_types::FrameId::BASE`]; resolving the string
+/// against a rig and re-tagging is the caller's job (the reader has no rig).
+pub fn parse_imu(data: &[u8]) -> Result<(ImuSample, String), BagError> {
     let mut c = LeCursor::new(data);
 
     // std_msgs/Header
@@ -72,7 +76,7 @@ pub fn parse_imu(data: &[u8]) -> Result<ImuSample, BagError> {
     let secs = c.u32()?;
     let nsecs = c.u32()?;
     let frame_id_len = c.u32()? as usize;
-    c.skip(frame_id_len)?;
+    let frame_id = String::from_utf8_lossy(c.take(frame_id_len)?).into_owned();
 
     // orientation (4×f64) + orientation_covariance (9×f64) — skipped.
     c.skip((4 + 9) * 8)?;
@@ -84,7 +88,7 @@ pub fn parse_imu(data: &[u8]) -> Result<ImuSample, BagError> {
     // trailing linear_acceleration_covariance is not needed.
 
     let stamp = Stamp::from_nanos(secs as i64 * 1_000_000_000 + nsecs as i64);
-    Ok(ImuSample::new(stamp, gyro, accel))
+    Ok((ImuSample::new(stamp, gyro, accel), frame_id))
 }
 
 #[cfg(test)]
@@ -136,7 +140,7 @@ mod tests {
             [0.1, -0.2, 0.3],
             [8.1, -0.3, 4.5],
         );
-        let s = parse_imu(&body).unwrap();
+        let (s, _frame) = parse_imu(&body).unwrap();
         assert_eq!(s.stamp.as_nanos(), 1_560_000_083_920_771_360);
         assert_eq!(s.gyro, Vec3::new(0.1, -0.2, 0.3));
         assert_eq!(s.accel, Vec3::new(8.1, -0.3, 4.5));
@@ -145,7 +149,7 @@ mod tests {
     #[test]
     fn handles_empty_frame_id() {
         let body = encode_imu(1, 2, "", [1.0, 2.0, 3.0], [4.0, 5.0, 6.0]);
-        let s = parse_imu(&body).unwrap();
+        let (s, _frame) = parse_imu(&body).unwrap();
         assert_eq!(s.stamp.as_nanos(), 1_000_000_002);
         assert_eq!(s.accel, Vec3::new(4.0, 5.0, 6.0));
     }

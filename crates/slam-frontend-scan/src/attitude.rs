@@ -60,7 +60,20 @@ impl AttitudeFilter {
         self.initialized
     }
 
-    /// Ingest one IMU sample (must arrive in non-decreasing stamp order).
+    /// Ingest one IMU sample expressed in an arbitrary rig frame: rates and forces are
+    /// rotated into the base frame through `t_base_sensor`'s rotation first (rigid
+    /// body: ω_base = R·ω_s; lever-arm acceleration terms are ignored — the gravity
+    /// gate rejects high-dynamics samples anyway).
+    pub fn process_in_frame(&mut self, sample: &ImuSample, t_base_sensor: &slam_types::Pose) {
+        let r = t_base_sensor.rotation();
+        self.process(&ImuSample::new(
+            sample.stamp,
+            r.rotate(sample.gyro),
+            r.rotate(sample.accel),
+        ));
+    }
+
+    /// Ingest one base-frame IMU sample (must arrive in non-decreasing stamp order).
     pub fn process(&mut self, sample: &ImuSample) {
         let dt = match self.last_stamp {
             // Clamp: a gap in the stream must not integrate one stale rate over seconds.

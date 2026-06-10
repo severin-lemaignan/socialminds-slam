@@ -16,7 +16,7 @@
 
 use slam_map::{SdfSample, SparseTsdf, TsdfConfig, TsdfMap};
 use slam_types::{
-    FrameId, ImuSample, LaserScan2D, Pose, Rotation, SlamSystem, Stamp, StampedPose, Vec3,
+    FrameId, LaserScan2D, Pose, Rotation, SlamSystem, Stamp, StampedPose, Vec3,
 };
 
 use crate::attitude::{AttitudeConfig, AttitudeFilter};
@@ -290,8 +290,14 @@ impl SlamSystem for ScanToMapOdometry {
         "scan_matching_3d"
     }
 
-    fn process_imu(&mut self, sample: &ImuSample) {
-        self.attitude.process(sample);
+    fn process_imu(&mut self, sample: &slam_types::ImuSample) {
+        // Multi-IMU rigs: rotate rates/forces into the base frame; an unknown frame is
+        // a mis-wired rig and is dropped, never guessed (ADR 0009).
+        if sample.frame == slam_types::FrameId::BASE {
+            self.attitude.process(sample);
+        } else if let Some(t) = self.extrinsic(sample.frame) {
+            self.attitude.process_in_frame(sample, &t);
+        }
     }
 
     fn process_scan(&mut self, scan: &LaserScan2D) {
