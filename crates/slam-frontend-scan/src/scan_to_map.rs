@@ -60,9 +60,11 @@ pub struct ScanToMapConfig {
     /// enable (≈ 0.15) together with dynamics masking, like `depth_updates_pose`.
     pub reg_band_tolerance: f64,
     /// When false (the current default), depth clouds fuse into the map and the
-    /// 2D laser band but do **not** correct the pose: un-masked dynamics (people)
-    /// dominate indoor depth views and drag the solve. Flips on when dynamics
-    /// masking lands (ADR 0002).
+    /// 2D laser band but do **not** correct the pose — *as long as scans are
+    /// present*: un-masked dynamics (people) dominate indoor depth views and a
+    /// lidar-corrected pose is strictly better. On scan-less datasets (OpenLORIS
+    /// `market`) depth is the only exteroceptive stream and always updates the
+    /// pose. Flips on when dynamics masking lands (ADR 0002).
     pub depth_updates_pose: bool,
     /// Cap on cloud points used per registration solve (deterministic subsample) —
     /// accuracy saturates long before a full VGA back-projection's 6 k points, and the
@@ -165,6 +167,9 @@ pub struct ScanToMapOdometry {
     frozen: Vec<(Se2, SparseTsdf)>,
     /// Verified loop closures, in detection order (the pose-graph's future edges).
     loops: Vec<LoopClosure>,
+    /// Whether any laser scan has been processed (gates depth→pose suppression:
+    /// on scan-less datasets depth must keep correcting the pose).
+    scan_seen: bool,
     /// Gravity-frame plane height of each lidar frame seen (for the depth band).
     lidar_planes: Vec<(FrameId, f64)>,
     /// Pose of the last map fusion, per modality (a shared threshold lets the 40 Hz
@@ -214,6 +219,7 @@ impl ScanToMapOdometry {
             overlap_left: 0,
             frozen: Vec::new(),
             loops: Vec::new(),
+            scan_seen: false,
             lidar_planes: Vec::new(),
             last_integrated: None,
             last_integrated_cloud: None,
@@ -621,7 +627,13 @@ impl ScanToMapOdometry {
             }
         }
         if let Some(found) = best {
-            // The verified pose wins over the drifted estimate.
+            // Snap to the verified pose every time: under large drift each individual
+            // correction is small (registration converges near its seed), so it is the
+            // *repetition* that re-localizes — a servo onto the frozen map. The price
+            // is millimetre jitter on drift-free revisits (cafe1-2: 0.0543→0.0559);
+            // gating on innovation breaks the servo and was measured catastrophic on
+            // the ring circuit. Stage 3b (GTSAM) replaces snapping with smooth graph
+            // corrections from the recorded edges.
             self.current = found.pose;
             self.loops.push(found);
         }
@@ -707,6 +719,7 @@ impl SlamSystem for ScanToMapOdometry {
             return;
         }
         let sensor_origin = self.attitude.tilt().rotate(extrinsic.translation());
+        self.scan_seen = true;
         match self.lidar_planes.iter_mut().find(|(f, _)| *f == scan.frame) {
             Some(entry) => entry.1 = sensor_origin.z,
             None => self.lidar_planes.push((scan.frame, sensor_origin.z)),
@@ -749,7 +762,7 @@ impl SlamSystem for ScanToMapOdometry {
             return;
         }
 
-        if self.cfg.depth_updates_pose {
+        if self.cfg.depth_updates_pose || !self.scan_seen {
             let predicted = self.predict(cloud.stamp);
             let result = self.register_3d(predicted);
             self.apply_registration(cloud.stamp, sensor_origin, predicted, result, false);

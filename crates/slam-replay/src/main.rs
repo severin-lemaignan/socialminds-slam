@@ -651,6 +651,16 @@ fn main() -> Result<()> {
     let (traj, latencies, wall) = run_timed(engine.as_dyn(), &events, on_scan);
 
     if let Engine::ScanToMap(odo) = &engine {
+        let st = odo.stats();
+        eprintln!(
+            "slam-replay: front-end health: {} matched / {} coasted / {} skipped /              {} degenerate; {} submap hand-overs, {} verified loop closures",
+            st.matched,
+            st.coasted,
+            st.skipped,
+            st.degenerate,
+            st.keyframes,
+            odo.loop_closures().len(),
+        );
         if let Some(path) = &args.map_out {
             write_map_dump(odo.map(), path)?;
         }
