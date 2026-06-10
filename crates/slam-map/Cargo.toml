@@ -1,0 +1,19 @@
+[package]
+name = "slam-map"
+description = "3D map substrate (ADR 0010): narrow-band TSDF behind a batch-level trait; pure-Rust sparse backend (OpenVDB backend feature-gated, to come)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+slam-types.workspace = true
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "tsdf_ops"
+harness = false

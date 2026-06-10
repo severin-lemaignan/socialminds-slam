@@ -929,6 +929,7 @@ dependencies = [
  "approx",
  "criterion",
  "nalgebra",
+ "slam-map",
  "slam-rig",
  "slam-types",
 ]
@@ -940,6 +941,14 @@ dependencies = [
  "cmake",
  "cxx",
  "cxx-build",
+]
+
+[[package]]
+name = "slam-map"
+version = "0.0.0"
+dependencies = [
+ "criterion",
+ "slam-types",
 ]
 
 [[package]]
