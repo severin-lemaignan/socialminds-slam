@@ -398,7 +398,7 @@ impl ScanMatcher {
 /// the unit eigenvector of the smaller eigenvalue, when that eigenvalue is below
 /// `ratio` × the larger one (translation unobservable along it — e.g. a corridor's
 /// axis when every surviving normal faces the walls).
-fn weak_translation_direction([h00, h01, h11]: [f64; 3], ratio: f64) -> Option<Vec2> {
+pub(crate) fn weak_translation_direction([h00, h01, h11]: [f64; 3], ratio: f64) -> Option<Vec2> {
     let half_trace = 0.5 * (h00 + h11);
     let d = (0.25 * (h00 - h11).powi(2) + h01 * h01).sqrt();
     let (lo, hi) = (half_trace - d, half_trace + d);

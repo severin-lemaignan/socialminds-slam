@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 slam-types.workspace = true
+slam-map.workspace = true
 nalgebra.workspace = true
 
 [dev-dependencies]

@@ -249,6 +249,9 @@ def default_systems() -> list[SystemSpec]:
         SystemSpec(name="stationary", baseline="stationary"),
         SystemSpec(name="imu_dead_reckoning", baseline="dead-reckoning"),
         SystemSpec(name="scan_matching", baseline="scan-matching", input="scan"),
+        # Scan-to-submap TSDF registration (ADR 0010); the planar matcher above stays
+        # in-tree as the parity reference (eval/reference/baselines/m3-planar-frontend).
+        SystemSpec(name="scan_matching_3d", baseline="scan-matching-3d", input="scan"),
     ]
 
 

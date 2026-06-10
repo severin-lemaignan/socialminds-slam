@@ -12,9 +12,11 @@
 mod attitude;
 mod icp;
 mod odometry;
+mod scan_to_map;
 mod se2;
 
 pub use attitude::{AttitudeConfig, AttitudeFilter};
 pub use icp::{match_scans, MatchConfig, MatchResult, ScanMatcher};
 pub use odometry::{ScanOdometry, ScanOdometryConfig, ScanOdometryStats};
+pub use scan_to_map::{ScanToMapConfig, ScanToMapOdometry};
 pub use se2::Se2;

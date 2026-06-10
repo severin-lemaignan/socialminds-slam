@@ -16,7 +16,9 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use slam_baseline::{ImuDeadReckoning, Stationary};
-use slam_frontend_scan::{ScanOdometry, ScanOdometryConfig, Se2};
+use slam_frontend_scan::{
+    ScanOdometry, ScanOdometryConfig, ScanToMapConfig, ScanToMapOdometry, Se2,
+};
 use slam_rig::SensorRig;
 use slam_types::{FrameId, ImuSample, LaserScan2D, Pose, SlamSystem, Stamp, Trajectory, Vec3};
 
@@ -30,6 +32,9 @@ enum System {
     DeadReckoning,
     /// 2D scan-to-keyframe odometry (point-to-line ICP, ADR 0007).
     ScanMatching,
+    /// Scan-to-submap odometry: 3D fans registered against a TSDF (ADR 0010).
+    #[value(name = "scan-matching-3d")]
+    ScanMatching3d,
 }
 
 #[derive(Parser, Debug)]
@@ -356,7 +361,7 @@ fn main() -> Result<()> {
         System::Stationary | System::DeadReckoning if imu.is_empty() => {
             bail!("this system consumes IMU data: pass --imu, or --bag with IMU topics")
         }
-        System::ScanMatching if scans.is_empty() => {
+        System::ScanMatching | System::ScanMatching3d if scans.is_empty() => {
             bail!("scan-matching consumes laser scans: pass --scan, or --bag with --scan-topic")
         }
         _ => {}
@@ -374,7 +379,7 @@ fn main() -> Result<()> {
             init.velocity,
             args.gravity,
         )),
-        System::ScanMatching => {
+        System::ScanMatching | System::ScanMatching3d => {
             let extrinsics = match &rig {
                 Some(rig) => {
                     let mut used: Vec<FrameId> = scans.iter().map(|s| s.frame).collect();
@@ -384,11 +389,18 @@ fn main() -> Result<()> {
                 }
                 None => Vec::new(),
             };
-            Box::new(ScanOdometry::with_extrinsics(
-                init.pose,
-                ScanOdometryConfig::default(),
-                extrinsics,
-            ))
+            match args.system {
+                System::ScanMatching => Box::new(ScanOdometry::with_extrinsics(
+                    init.pose,
+                    ScanOdometryConfig::default(),
+                    extrinsics,
+                )),
+                _ => Box::new(ScanToMapOdometry::with_extrinsics(
+                    init.pose,
+                    ScanToMapConfig::default(),
+                    extrinsics,
+                )),
+            }
         }
     };
 

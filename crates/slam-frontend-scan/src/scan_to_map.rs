@@ -1,0 +1,360 @@
+//! Scan-to-submap odometry (ADR 0010): register each lifted 3D fan against the local
+//! TSDF submap instead of a keyframe scan.
+//!
+//! This completes what the per-sensor keyframes of [`ScanOdometry`](crate::ScanOdometry)
+//! approximated: **one shared local map** — every lidar (and later RGB-D) fuses into and
+//! registers against the same structure, floors included (a tilted beam's floor hit is
+//! real geometry here, not a phantom to gate away). The solve stays 3-DoF
+//! (x, y, yaw in the gravity frame): the planar lidars cannot observe z/roll/pitch and
+//! this front-end still never invents out-of-plane motion — roll/pitch come from the
+//! IMU ([`AttitudeFilter`]), z from the submap anchor.
+//!
+//! Submaps are bounded: after `submap_extent` of travel a fresh map is started, with an
+//! overlap window (register against the old, integrate into both) so registration never
+//! faces an empty model. Submap re-posing on loop closure is the pose-graph's job
+//! (stage 3); here submaps only bound memory and drift accumulation.
+
+use slam_map::{SdfSample, SparseTsdf, TsdfConfig, TsdfMap};
+use slam_types::{
+    FrameId, ImuSample, LaserScan2D, Pose, Rotation, SlamSystem, Stamp, StampedPose, Vec3,
+};
+
+use crate::attitude::{AttitudeConfig, AttitudeFilter};
+use crate::icp::weak_translation_direction;
+use crate::odometry::ScanOdometryStats;
+use crate::se2::Se2;
+
+/// Tuning for [`ScanToMapOdometry`].
+#[derive(Debug, Clone)]
+pub struct ScanToMapConfig {
+    pub tsdf: TsdfConfig,
+    /// Gauss-Newton iterations per scan.
+    pub max_iterations: usize,
+    /// Converged when one step moves less than this (m / rad).
+    pub translation_epsilon: f64,
+    pub rotation_epsilon: f64,
+    /// Scans with fewer valid returns are skipped outright.
+    pub min_valid_points: usize,
+    /// Registrations keeping a smaller fraction of in-band samples are failures (coast).
+    pub min_inlier_fraction: f64,
+    /// See [`crate::MatchConfig::degeneracy_eigenvalue_ratio`].
+    pub degeneracy_eigenvalue_ratio: f64,
+    /// Lifted points lower than this above the floor (m) are **excluded from the
+    /// registration residuals** (a horizontal floor cannot constrain x/y/yaw, and its
+    /// single-viewpoint projective TSDF gradients alias into the plane) — but they are
+    /// still *integrated*: the floor is real structure for the map. Active only once
+    /// the attitude is initialised and the sensor sits above the clearance.
+    pub floor_clearance: f64,
+    /// Attitude (gravity tilt) filter tuning; active once IMU samples arrive.
+    pub attitude: AttitudeConfig,
+    /// Integrate into the map only after this much motion since the last fusion (m /
+    /// rad) — PLICP's keyframe diet: fusing every scan at 20-40 Hz writes the
+    /// estimate's own noise into the map hundreds of times per metre (error feedback)
+    /// and gives passing people hundreds of chances to become ghosts.
+    pub integrate_translation: f64,
+    pub integrate_rotation: f64,
+    /// Travel distance (m) before a fresh submap is started.
+    pub submap_extent: f64,
+    /// Scans integrated into both maps after a submap hand-over.
+    pub submap_overlap_scans: usize,
+}
+
+impl Default for ScanToMapConfig {
+    fn default() -> Self {
+        ScanToMapConfig {
+            // Finer than the 5 cm map default: registration accuracy is bounded by the
+            // voxel quantisation noise floor, and the planar-parity gate (ADR 0010)
+            // demands PLICP-level accuracy. 2.5 cm costs ~8x voxels on a *local* submap
+            // and the runtime headroom is ample (TSDF registration outruns PLICP).
+            tsdf: slam_map::TsdfConfig {
+                voxel_size: 0.025,
+                truncation: 0.075,
+                max_weight: 100000.0,
+            },
+            max_iterations: 12,
+            translation_epsilon: 1e-6,
+            rotation_epsilon: 1e-7,
+            min_valid_points: 50,
+            min_inlier_fraction: 0.4,
+            degeneracy_eigenvalue_ratio: 0.02,
+            floor_clearance: 0.05,
+            attitude: AttitudeConfig::default(),
+            integrate_translation: 0.1,
+            integrate_rotation: 0.1,
+            submap_extent: 20.0,
+            submap_overlap_scans: 40,
+        }
+    }
+}
+
+/// Scan-to-submap odometry implementing [`SlamSystem`] (ADR 0010 stage 2).
+pub struct ScanToMapOdometry {
+    cfg: ScanToMapConfig,
+    /// SE(3) anchor: planar odometry is composed on top of this.
+    base: Pose,
+    /// SE(3) `T_base_sensor` per [`FrameId`] index (empty = base-frame scans only).
+    extrinsics: Vec<Pose>,
+    attitude: AttitudeFilter,
+    /// The active submap (odometry frame) and where it was started.
+    map: SparseTsdf,
+    submap_birth: Se2,
+    /// Previous submap during the hand-over window: registration target while the new
+    /// map fills, integration target alongside it.
+    prev_map: Option<SparseTsdf>,
+    overlap_left: usize,
+    /// Pose of the last map fusion (the integration keyframe diet).
+    last_integrated: Option<Se2>,
+    /// Current base pose in the odometry (anchor-relative, gravity-aligned) frame.
+    current: Se2,
+    last_motion: Se2,
+    last_stamp: Option<Stamp>,
+    stats: ScanOdometryStats,
+    /// Reused buffers (hot path: no steady-state allocation).
+    lifted: Vec<Vec3>,
+    world: Vec<Vec3>,
+    samples: Vec<Option<SdfSample>>,
+}
+
+impl ScanToMapOdometry {
+    pub fn new(cfg: ScanToMapConfig) -> Self {
+        Self::with_extrinsics(Pose::identity(), cfg, Vec::new())
+    }
+
+    pub fn anchored_at(base: Pose, cfg: ScanToMapConfig) -> Self {
+        Self::with_extrinsics(base, cfg, Vec::new())
+    }
+
+    /// Multi-lidar: `extrinsics[frame.0]` = SE(3) `T_base_sensor` per rig frame.
+    pub fn with_extrinsics(base: Pose, cfg: ScanToMapConfig, extrinsics: Vec<Pose>) -> Self {
+        let attitude = AttitudeFilter::new(cfg.attitude.clone());
+        let map = SparseTsdf::new(cfg.tsdf.clone());
+        ScanToMapOdometry {
+            cfg,
+            base,
+            extrinsics,
+            attitude,
+            map,
+            submap_birth: Se2::identity(),
+            prev_map: None,
+            overlap_left: 0,
+            last_integrated: None,
+            current: Se2::identity(),
+            last_motion: Se2::identity(),
+            last_stamp: None,
+            stats: ScanOdometryStats::default(),
+            lifted: Vec::new(),
+            world: Vec::new(),
+            samples: Vec::new(),
+        }
+    }
+
+    pub fn stats(&self) -> ScanOdometryStats {
+        self.stats
+    }
+
+    fn extrinsic(&self, frame: FrameId) -> Option<Pose> {
+        match self.extrinsics.get(frame.0 as usize) {
+            Some(t) => Some(*t),
+            None if frame == FrameId::BASE => Some(Pose::identity()),
+            None => None,
+        }
+    }
+
+    /// Beams → tilt-compensated 3D points in the base's gravity-aligned frame.
+    /// Unlike the planar path, **z is kept and floor hits are kept**: in a 3D map the
+    /// floor is structure, not noise.
+    fn lift_scan(&mut self, scan: &LaserScan2D, t_base_sensor: &Pose) {
+        self.lifted.clear();
+        let tilt: Rotation = self.attitude.tilt();
+        let tilted = self.attitude.is_initialized();
+        for (i, &r) in scan.ranges.iter().enumerate() {
+            let r = r as f64;
+            if !r.is_finite() || r < scan.range_min || r > scan.range_max {
+                continue;
+            }
+            let angle = scan.angle_min + i as f64 * scan.angle_increment;
+            let p_sensor = Vec3::new(r * angle.cos(), r * angle.sin(), 0.0);
+            let p_base = t_base_sensor.transform_point(p_sensor);
+            self.lifted
+                .push(if tilted { tilt.rotate(p_base) } else { p_base });
+        }
+    }
+
+    /// Apply the planar pose to a gravity-aligned 3D point (z passes through).
+    #[inline]
+    fn apply_planar(t: &Se2, p: Vec3) -> Vec3 {
+        let (s, c) = t.theta.sin_cos();
+        Vec3::new(c * p.x - s * p.y + t.x, s * p.x + c * p.y + t.y, p.z)
+    }
+
+    /// 3-DoF Gauss-Newton: minimise the TSDF value at the transformed points.
+    /// Returns (pose, inlier fraction, weak translation direction).
+    fn register(&mut self, initial: Se2, sensor_z: f64) -> (Se2, f64, Option<slam_types::Vec2>) {
+        let map: &dyn TsdfMap = match &self.prev_map {
+            Some(prev) => prev,
+            None => &self.map,
+        };
+        let band = self.cfg.tsdf.truncation * 0.9;
+        // Floor residuals carry no planar information (see ScanToMapConfig); gate them
+        // out of the solve when the rig geometry lets us tell floor from wall.
+        let gate_floor =
+            self.attitude.is_initialized() && sensor_z > 2.0 * self.cfg.floor_clearance;
+        let z_min = self.cfg.floor_clearance;
+        let mut transform = initial;
+        let mut inlier_fraction = 0.0;
+        let mut h_translation = [0.0; 3];
+
+        for _ in 0..self.cfg.max_iterations {
+            self.world.clear();
+            self.world.extend(
+                self.lifted
+                    .iter()
+                    .map(|&p| Self::apply_planar(&transform, p)),
+            );
+            map.sample_batch(&self.world, &mut self.samples);
+
+            // NOTE: no PLICP-style residual trimming here — measured on cafe1, it
+            // *hurts* (0.090→0.030 worse ATE): TSDF residuals near convergence are not
+            // outlier-contaminated distances, and trimming the largest |sdf| discards
+            // precisely the correcting signal. Dynamics robustness comes from the
+            // keyframed integration diet + truncation band instead.
+            let mut h = nalgebra::Matrix3::<f64>::zeros();
+            let mut g = nalgebra::Vector3::<f64>::zeros();
+            let mut used = 0usize;
+            for (q, s) in self.world.iter().zip(self.samples.iter()) {
+                let Some(s) = s else { continue };
+                if s.sdf.abs() > band || (gate_floor && q.z < z_min) {
+                    continue;
+                }
+                let (gx, gy) = (s.gradient.x, s.gradient.y);
+                let jac = nalgebra::Vector3::new(gx, gy, gx * -q.y + gy * q.x);
+                h += jac * jac.transpose();
+                g += jac * s.sdf;
+                used += 1;
+            }
+            inlier_fraction = used as f64 / self.lifted.len().max(1) as f64;
+            if used < self.cfg.min_valid_points {
+                return (transform, inlier_fraction, None);
+            }
+            h_translation = [h[(0, 0)], h[(0, 1)], h[(1, 1)]];
+
+            let Some(delta) = h.cholesky().map(|ch| ch.solve(&(-g))) else {
+                return (transform, 0.0, None);
+            };
+            transform = Se2::new(delta.x, delta.y, delta.z).compose(&transform);
+            if delta.x.hypot(delta.y) < self.cfg.translation_epsilon
+                && delta.z.abs() < self.cfg.rotation_epsilon
+            {
+                break;
+            }
+        }
+        let weak = weak_translation_direction(h_translation, self.cfg.degeneracy_eigenvalue_ratio);
+        (transform, inlier_fraction, weak)
+    }
+
+    /// Fuse the lifted scan into the active map(s) at `pose`.
+    fn integrate(&mut self, pose: Se2, sensor_origin_base: Vec3) {
+        let origin = Self::apply_planar(&pose, sensor_origin_base);
+        self.world.clear();
+        self.world
+            .extend(self.lifted.iter().map(|&p| Self::apply_planar(&pose, p)));
+        self.map.integrate_points(origin, &self.world);
+        if let Some(prev) = &mut self.prev_map {
+            prev.integrate_points(origin, &self.world);
+            self.overlap_left = self.overlap_left.saturating_sub(1);
+            if self.overlap_left == 0 {
+                self.prev_map = None;
+            }
+        }
+    }
+
+    /// Hand over to a fresh submap once the extent is exceeded.
+    fn maybe_spawn_submap(&mut self) {
+        let travelled = self
+            .submap_birth
+            .inverse()
+            .compose(&self.current)
+            .translation_norm();
+        if travelled > self.cfg.submap_extent && self.prev_map.is_none() {
+            let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
+            self.prev_map = Some(std::mem::replace(&mut self.map, fresh));
+            self.overlap_left = self.cfg.submap_overlap_scans;
+            self.submap_birth = self.current;
+            self.stats.keyframes += 1; // a submap hand-over is the new "keyframe" event
+        }
+    }
+}
+
+impl SlamSystem for ScanToMapOdometry {
+    fn name(&self) -> &str {
+        "scan_matching_3d"
+    }
+
+    fn process_imu(&mut self, sample: &ImuSample) {
+        self.attitude.process(sample);
+    }
+
+    fn process_scan(&mut self, scan: &LaserScan2D) {
+        self.stats.scans += 1;
+        let Some(extrinsic) = self.extrinsic(scan.frame) else {
+            self.stats.skipped += 1;
+            return;
+        };
+        self.lift_scan(scan, &extrinsic);
+        if self.lifted.len() < self.cfg.min_valid_points {
+            self.stats.skipped += 1;
+            return;
+        }
+        let sensor_origin = self.attitude.tilt().rotate(extrinsic.translation());
+
+        // First scan of the run: the map is empty — seed it.
+        if self.last_stamp.is_none() {
+            self.last_stamp = Some(scan.stamp);
+            self.integrate(self.current, sensor_origin);
+            self.last_integrated = Some(self.current);
+            return;
+        }
+
+        let predicted = self.current.compose(&self.last_motion);
+        let (mut pose, inliers, weak) = self.register(predicted, sensor_origin.z);
+
+        let previous = self.current;
+        if inliers >= self.cfg.min_inlier_fraction {
+            if let Some(dir) = weak {
+                // Unobservable direction (corridor): take the prediction's component.
+                let slip = dir.x * (predicted.x - pose.x) + dir.y * (predicted.y - pose.y);
+                pose = Se2::new(pose.x + dir.x * slip, pose.y + dir.y * slip, pose.theta);
+                self.stats.degenerate += 1;
+            }
+            self.current = pose;
+            self.stats.matched += 1;
+        } else {
+            // Unregistrable (dynamics, occlusion, empty model): coast on prediction.
+            self.current = predicted;
+            self.stats.coasted += 1;
+        }
+        self.last_motion = previous.inverse().compose(&self.current);
+        self.last_stamp = Some(scan.stamp);
+
+        let due = match self.last_integrated {
+            None => true,
+            Some(li) => {
+                let d = li.inverse().compose(&self.current);
+                d.translation_norm() > self.cfg.integrate_translation
+                    || d.theta.abs() > self.cfg.integrate_rotation
+            }
+        };
+        if due {
+            self.integrate(self.current, sensor_origin);
+            self.last_integrated = Some(self.current);
+            self.maybe_spawn_submap();
+        }
+    }
+
+    fn current_estimate(&self) -> Option<StampedPose> {
+        self.last_stamp.map(|stamp| StampedPose {
+            stamp,
+            pose: self.base * self.current.to_pose(),
+        })
+    }
+}

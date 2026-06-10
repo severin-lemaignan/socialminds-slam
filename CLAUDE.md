@@ -120,5 +120,12 @@ synthetic-graph tests green locally); awaiting first green CI with the vendored 
 `eval/reference/sota/`; caveat: OpenLORIS GT is itself laser-based). **Sensor rig landed**
 (ADR 0009): `slam-rig` reads the robot's URDF, measurements are frame-tagged, the scan
 front-end fuses **multiple lidars** through per-sensor extrinsics into one shared pose
-(dual-lidar raycast harness + mock URDF in `slam-frontend-scan/tests/`); next
-scan-to-local-map, RGB-D-inertial, then fusion. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+(dual-lidar raycast harness + mock URDF in `slam-frontend-scan/tests/`). **ADR 0010
+stages 1+2 done**: IMU attitude filter + tilt-compensated 3D fans + ICP degeneracy guard
+(corridor-axis slip caught and filled from prediction); `slam-map` (TSDF trait + Rust
+sparse backend) and `scan_matching_3d` scan-to-submap registration (2.5 cm submap voxels,
+keyframed integration — fusing every scan feeds drift back into the map; no residual
+trimming — measured harmful on TSDF). **Beats the planar parity gate**: ATE 0.039/0.055 m
+vs 0.090/0.066, p99 0.9 ms vs 3.6/4.6 ms, 53x real-time vs 21-27x (cafe1-1/-2, RSS +6 MB).
+Next: submap pose-graph + signatures (re-localization), OpenVDB backend, RGB-D-inertial.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md).
