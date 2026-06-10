@@ -70,7 +70,7 @@ struct Args {
     /// Mutually exclusive with the per-topic flags below.
     #[arg(long, value_name = "FILE", requires = "bag", conflicts_with_all = [
         "urdf", "rig_from_bag", "imu_topic", "gyro_topic", "accel_topic",
-        "scan_topic", "depth_topic", "camera_info_topic",
+        "scan_topic", "depth_topic", "camera_info_topic", "color_topic",
     ])]
     config: Option<PathBuf>,
 
@@ -133,6 +133,11 @@ struct Args {
     /// to the sibling of `--depth-topic` (`…/image_raw` → `…/camera_info`).
     #[arg(long, value_name = "TOPIC", requires = "depth_topic")]
     camera_info_topic: Option<String>,
+
+    /// Colour image topic riding with an *aligned* depth stream (e.g.
+    /// `/d400/color/image_raw`): depth points carry per-pixel RGB → coloured 3D map.
+    #[arg(long, value_name = "TOPIC", requires = "depth_topic")]
+    color_topic: Option<String>,
 
     /// Keep every Nth depth frame (30 fps is redundant at ≤ 2 m/s).
     #[arg(long, value_name = "N", default_value_t = 3)]
@@ -431,6 +436,7 @@ fn load_bag_inputs_from_config(
             bag,
             &d.topic,
             &d.info_topic(),
+            d.color.as_deref(),
             &depth_cfg,
             d.every_nth,
         )
@@ -518,6 +524,7 @@ fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<B
             bag,
             depth_topic,
             &info_topic,
+            args.color_topic.as_deref(),
             &slam_datasets::DepthConfig::default(),
             args.depth_every,
         )
@@ -834,7 +841,9 @@ fn main() -> Result<()> {
                                 [p.x as f32, p.y as f32, p.z as f32]
                             })
                             .collect();
-                        viz.log_cloud(est.stamp.as_seconds(), world);
+                        let colors: Vec<[u8; 3]> =
+                            cloud.colors.iter().step_by(4).copied().collect();
+                        viz.log_cloud(est.stamp.as_seconds(), &est.pose, world, colors);
                     }
                 }
             };
@@ -862,7 +871,12 @@ fn main() -> Result<()> {
         }
         if let Some(viz) = &viz_sink {
             let end = events.last().map_or(0.0, |e| e.stamp().as_seconds());
-            viz.log_tsdf(odo.map(), end);
+            let submaps: Vec<(f64, f64, f64, &dyn slam_map::TsdfMap)> = odo
+                .submaps_3d()
+                .into_iter()
+                .map(|(a, m)| (a.x, a.y, a.theta, m as &dyn slam_map::TsdfMap))
+                .collect();
+            viz.log_tsdf(&submaps, end);
         }
     } else if args.map_out.is_some() {
         bail!("--map-out needs --baseline scan-matching-3d (the TSDF front-end)");

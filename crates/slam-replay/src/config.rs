@@ -95,6 +95,9 @@ pub struct DepthSensor {
     pub topic: String,
     /// Defaults to the sibling `…/camera_info` of `topic`.
     pub camera_info: Option<String>,
+    /// Optional colour image topic riding with an *aligned* depth stream (e.g.
+    /// `/d400/color/image_raw`): points carry per-pixel RGB for the coloured map.
+    pub color: Option<String>,
     /// Range-adaptive sampling target: kept pixels are spaced ≈ this on the surface
     /// at every depth (match the 3D field's voxel size).
     #[serde(default = "default_target_spacing")]

@@ -270,6 +270,7 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
     path: P,
     depth_topic: &str,
     info_topic: &str,
+    color_topic: Option<&str>,
     cfg: &DepthConfig,
     every_nth: usize,
 ) -> Result<(Vec<PointCloud>, String), BagError> {
@@ -292,9 +293,17 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
     let info_ids: BTreeSet<u32> = find(info_topic, "sensor_msgs/CameraInfo")?
         .into_iter()
         .collect();
+    let color_ids: BTreeSet<u32> = match color_topic {
+        Some(t) => find(t, "sensor_msgs/Image")?.into_iter().collect(),
+        None => BTreeSet::new(),
+    };
 
-    let wanted: BTreeSet<u32> = depth_ids.union(&info_ids).copied().collect();
+    let mut wanted: BTreeSet<u32> = depth_ids.union(&info_ids).copied().collect();
+    wanted.extend(color_ids.iter().copied());
     let mut intrinsics: Option<Intrinsics> = None;
+    // The most recent colour frame; each kept depth frame samples it (stamp-gated
+    // inside `parse_depth_image`, so a dropped colour stream degrades to uncoloured).
+    let mut last_color: Option<crate::depth_msg::ColorImage> = None;
     let mut pending: Vec<Vec<u8>> = Vec::new(); // depth frames seen before the first info
     let mut clouds: Vec<PointCloud> = Vec::new();
     let mut frame_id = String::new();
@@ -307,10 +316,17 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
                 let (k, _frame) = parse_camera_info(data)?;
                 intrinsics = Some(k);
                 for raw in pending.drain(..) {
-                    let (cloud, f) = parse_depth_image(&raw, &k, cfg)?;
+                    let (cloud, f) = parse_depth_image(&raw, &k, cfg, last_color.as_ref())?;
                     frame_id = f;
                     clouds.push(cloud);
                 }
+            }
+            return Ok(());
+        }
+        if color_ids.contains(&conn) {
+            // A bad colour frame must not kill the depth stream.
+            if let Ok(c) = crate::depth_msg::parse_color_image(data) {
+                last_color = Some(c);
             }
             return Ok(());
         }
@@ -322,7 +338,7 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
         seen += 1;
         match &intrinsics {
             Some(k) => {
-                let (cloud, f) = parse_depth_image(data, k, cfg)?;
+                let (cloud, f) = parse_depth_image(data, k, cfg, last_color.as_ref())?;
                 frame_id = f;
                 clouds.push(cloud);
             }

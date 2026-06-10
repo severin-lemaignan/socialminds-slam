@@ -18,6 +18,7 @@
 //! ```
 //!
 //! Depth encodings handled: `16UC1`/`mono16` (millimetres) and `32FC1` (metres).
+//! Colour encodings handled: `rgb8`, `bgr8`, `rgba8`, `bgra8`.
 
 use slam_types::{PointCloud, Stamp, Vec3};
 
@@ -66,6 +67,68 @@ impl Default for DepthConfig {
             max_range: 6.0,
         }
     }
+}
+
+/// A decoded colour `sensor_msgs/Image`, kept only long enough to colour the depth
+/// frame it rides with (RealSense publishes aligned depth and colour on the same
+/// pixel grid and stamp). Raw RGB is *stored* on the cloud — illumination
+/// normalization is a consumer concern (viz, future voxel-colour channel), never
+/// an ingest one: information is not destroyed at the sensor boundary.
+pub struct ColorImage {
+    pub stamp: Stamp,
+    width: usize,
+    height: usize,
+    step: usize,
+    /// Byte offsets of (r, g, b) within a pixel.
+    rgb: (usize, usize, usize),
+    bpp: usize,
+    data: Vec<u8>,
+}
+
+impl ColorImage {
+    fn rgb_at(&self, u: usize, v: usize) -> [u8; 3] {
+        let off = v * self.step + u * self.bpp;
+        [
+            self.data[off + self.rgb.0],
+            self.data[off + self.rgb.1],
+            self.data[off + self.rgb.2],
+        ]
+    }
+}
+
+/// Decode one colour `sensor_msgs/Image` body.
+pub fn parse_color_image(data: &[u8]) -> Result<ColorImage, BagError> {
+    let mut c = LeCursor { data, pos: 0 };
+    let (stamp, _frame_id) = c.header()?;
+    let height = c.u32()? as usize;
+    let width = c.u32()? as usize;
+    let encoding = c.string()?;
+    let _is_bigendian = c.take(1)?;
+    let step = c.u32()? as usize;
+    let len = c.u32()? as usize;
+    let pixels = c.take(len)?;
+    let (rgb, bpp) = match encoding.as_str() {
+        "rgb8" => ((0, 1, 2), 3),
+        "bgr8" => ((2, 1, 0), 3),
+        "rgba8" => ((0, 1, 2), 4),
+        "bgra8" => ((2, 1, 0), 4),
+        _ => {
+            eprintln!("slam-datasets: unsupported colour encoding {encoding:?}");
+            return Err(BagError::Format("unsupported colour encoding"));
+        }
+    };
+    if step < width * bpp || len < step * height {
+        return Err(BagError::Format("colour image size mismatch"));
+    }
+    Ok(ColorImage {
+        stamp,
+        width,
+        height,
+        step,
+        rgb,
+        bpp,
+        data: pixels.to_vec(),
+    })
 }
 
 struct LeCursor<'a> {
@@ -153,6 +216,7 @@ pub fn parse_depth_image(
     data: &[u8],
     intrinsics: &Intrinsics,
     cfg: &DepthConfig,
+    color: Option<&ColorImage>,
 ) -> Result<(PointCloud, String), BagError> {
     let mut c = LeCursor { data, pos: 0 };
     let (stamp, frame_id) = c.header()?;
@@ -179,8 +243,12 @@ pub fn parse_depth_image(
         return Err(BagError::Format("depth image size mismatch"));
     }
 
+    // Colour rides only when the paired frame is plausibly the *same* moment —
+    // a stale frame would paint the wrong wall.
+    let color = color.filter(|c| (c.stamp.as_seconds() - stamp.as_seconds()).abs() < 0.05);
     let base = cfg.min_stride.max(1);
     let mut points = Vec::with_capacity(4096);
+    let mut colors: Vec<[u8; 3]> = Vec::with_capacity(if color.is_some() { 4096 } else { 0 });
     let mut v = 0;
     while v < height {
         let row = v * step;
@@ -202,6 +270,13 @@ pub fn parse_depth_image(
                         (v as f64 - intrinsics.cy) / intrinsics.fy * z,
                         z,
                     ));
+                    if let Some(c) = color {
+                        // Aligned depth shares the colour pixel grid; rescale if the
+                        // resolutions differ anyway.
+                        let cu = (u * c.width / width).min(c.width - 1);
+                        let cv = (v * c.height / height).min(c.height - 1);
+                        colors.push(c.rgb_at(cu, cv));
+                    }
                 }
             }
             u += base;
@@ -216,6 +291,12 @@ pub fn parse_depth_image(
             i += 1;
             keep
         });
+        let mut i = 0;
+        colors.retain(|_| {
+            let keep = i % keep_every == 0;
+            i += 1;
+            keep
+        });
     }
 
     Ok((
@@ -223,6 +304,7 @@ pub fn parse_depth_image(
             stamp,
             frame: slam_types::FrameId::BASE,
             points,
+            colors,
         },
         frame_id,
     ))
@@ -304,7 +386,7 @@ mod tests {
         mm[2 * 4] = 1000; // (u=0, v=2): 1 m
         mm[2 * 4 + 2] = 2000; // (u=2, v=2): 2 m
         let body = encode_depth_16u("d400_color", 4, 4, &mm);
-        let (cloud, frame) = parse_depth_image(&body, &k, &cfg).unwrap();
+        let (cloud, frame) = parse_depth_image(&body, &k, &cfg, None).unwrap();
         assert_eq!(frame, "d400_color");
         assert_eq!(cloud.stamp.as_nanos(), 100_000_000_500);
         assert_eq!(cloud.points.len(), 2);
@@ -343,7 +425,7 @@ mod tests {
             }
         }
         let body = encode_depth_16u("f", 16, 16, &mm);
-        let (cloud, _) = parse_depth_image(&body, &k, &cfg).unwrap();
+        let (cloud, _) = parse_depth_image(&body, &k, &cfg, None).unwrap();
         let near = cloud.points.iter().filter(|p| p.z < 1.0).count();
         let far = cloud.points.iter().filter(|p| p.z > 1.0).count();
         // Far half sampled at lattice 2 → 8×4 columns... at least 4× denser than near.
@@ -368,8 +450,71 @@ mod tests {
         };
         let mm = [2000u16; 256];
         let body = encode_depth_16u("f", 16, 16, &mm);
-        let (cloud, _) = parse_depth_image(&body, &k, &cfg).unwrap();
+        let (cloud, _) = parse_depth_image(&body, &k, &cfg, None).unwrap();
         assert!(cloud.points.len() <= 20, "{}", cloud.points.len());
+    }
+
+    fn encode_rgb8(frame: &str, w: usize, h: usize, px: &[[u8; 3]]) -> Vec<u8> {
+        let mut v = header(frame);
+        v.extend_from_slice(&(h as u32).to_le_bytes());
+        v.extend_from_slice(&(w as u32).to_le_bytes());
+        v.extend_from_slice(&4u32.to_le_bytes());
+        v.extend_from_slice(b"rgb8");
+        v.push(0);
+        v.extend_from_slice(&((w * 3) as u32).to_le_bytes()); // step
+        v.extend_from_slice(&((w * h * 3) as u32).to_le_bytes());
+        for c in px {
+            v.extend_from_slice(c);
+        }
+        v
+    }
+
+    #[test]
+    fn depth_points_pick_up_aligned_color() {
+        let k = Intrinsics {
+            fx: 2.0,
+            fy: 2.0,
+            cx: 2.0,
+            cy: 2.0,
+        };
+        let cfg = DepthConfig {
+            target_spacing: 1e-6,
+            min_stride: 2,
+            max_points: 100,
+            min_range: 0.5,
+            max_range: 3.0,
+        };
+        let mut mm = [0u16; 16];
+        mm[2 * 4] = 1000; // (u=0, v=2)
+        mm[2 * 4 + 2] = 2000; // (u=2, v=2)
+        let depth = encode_depth_16u("d400_color", 4, 4, &mm);
+        // Same 4×4 grid: paint (0,2) red, (2,2) blue. Same header stamp → paired.
+        let mut px = [[0u8; 3]; 16];
+        px[2 * 4] = [200, 10, 10];
+        px[2 * 4 + 2] = [10, 10, 200];
+        let color = parse_color_image(&encode_rgb8("d400_color", 4, 4, &px)).unwrap();
+        let (cloud, _) = parse_depth_image(&depth, &k, &cfg, Some(&color)).unwrap();
+        assert_eq!(cloud.points.len(), 2);
+        assert_eq!(cloud.colors, vec![[200, 10, 10], [10, 10, 200]]);
+    }
+
+    #[test]
+    fn stale_color_is_dropped() {
+        let k = Intrinsics {
+            fx: 2.0,
+            fy: 2.0,
+            cx: 2.0,
+            cy: 2.0,
+        };
+        let mut mm = [0u16; 16];
+        mm[2 * 4] = 1000;
+        let depth = encode_depth_16u("f", 4, 4, &mm);
+        let mut color = parse_color_image(&encode_rgb8("f", 4, 4, &[[9u8; 3]; 16])).unwrap();
+        color.stamp = Stamp::from_nanos(color.stamp.as_nanos() + 200_000_000); // +0.2 s
+        let (cloud, _) =
+            parse_depth_image(&depth, &k, &DepthConfig::default(), Some(&color)).unwrap();
+        assert_eq!(cloud.points.len(), 1);
+        assert!(cloud.colors.is_empty(), "stale colour must not pair");
     }
 
     #[test]
@@ -381,7 +526,9 @@ mod tests {
             cy: 2.0,
         };
         let body = encode_depth_16u("f", 4, 4, &[0u16; 16]);
-        assert!(parse_depth_image(&body[..body.len() - 10], &k, &DepthConfig::default()).is_err());
+        assert!(
+            parse_depth_image(&body[..body.len() - 10], &k, &DepthConfig::default(), None).is_err()
+        );
     }
 
     #[test]
@@ -401,6 +548,6 @@ mod tests {
         body.extend_from_slice(&3u32.to_le_bytes());
         body.extend_from_slice(&3u32.to_le_bytes());
         body.extend_from_slice(&[0, 0, 0]);
-        assert!(parse_depth_image(&body, &k, &DepthConfig::default()).is_err());
+        assert!(parse_depth_image(&body, &k, &DepthConfig::default(), None).is_err());
     }
 }

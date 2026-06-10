@@ -125,6 +125,10 @@ pub struct PointCloud {
     /// The sensor frame the points are expressed in ([`FrameId::BASE`] when untagged).
     pub frame: FrameId,
     pub points: Vec<Vec3>,
+    /// Optional per-point RGB (parallel to `points`; empty = uncoloured). Carried for
+    /// visualization and the future voxel-colour channel — never consumed by
+    /// registration.
+    pub colors: Vec<[u8; 3]>,
 }
 
 #[cfg(test)]

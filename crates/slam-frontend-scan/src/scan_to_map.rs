@@ -295,8 +295,22 @@ impl ScanToMapOdometry {
     }
 
     /// The active 3D submap (the map *product*) — export/visualization path.
+    /// **Anchor-local**: see [`submaps_3d`](Self::submaps_3d) for world placement.
     pub fn map(&self) -> &SparseTsdf {
         &self.map
+    }
+
+    /// Every 3D submap field with its (possibly graph-optimised) anchor: frozen
+    /// submaps in order, then the active one. Each field's voxels are in the
+    /// *anchor-local* frame — the full map is the union after applying each anchor.
+    pub fn submaps_3d(&self) -> Vec<(Se2, &SparseTsdf)> {
+        let mut out: Vec<(Se2, &SparseTsdf)> = self
+            .frozen
+            .iter()
+            .map(|(anchor, _reg, map3d)| (*anchor, map3d))
+            .collect();
+        out.push((self.submap_birth, &self.map));
+        out
     }
 
     fn extrinsic(&self, frame: FrameId) -> Option<Pose> {

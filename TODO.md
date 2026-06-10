@@ -64,11 +64,15 @@ motivate an item are noted inline.
 - [ ] **Stage 5 — OpenVDB backend** (system `libopenvdb-dev` 10.x, feature-gated,
       `cxx` shim; ADR 0010) + conformance suite vs `SparseTsdf`; in-process grid
       hand-over to reMap.
-- [ ] **Voxel RGB**: decode `/d400/color` paired with aligned depth (same pixels) into
-      colored clouds; optional per-voxel RGB accumulation (surface voxel only,
-      config-gated so depth-only memory stays at 8 B/voxel); rerun `world/tsdf`
-      colored by true RGB. Implement together with dynamics masking — same
-      color-image decode path. Useful for reMap.
+- [ ] **Voxel color channel**: colored clouds + rerun display landed (`color:` /
+      `--color-topic`: aligned-depth pixels carry RGB; viz paints the CIELAB a\*b\*
+      chroma at fixed L\* — illumination-invariant). Remaining: per-voxel chroma
+      accumulation in the TSDF — store quantized (a\*, b\*) (2 B/voxel, surface
+      voxels only, config-gated so depth-only memory stays at 8 B/voxel); a\*b\* is
+      perceptually uniform, so TSDF-style weighted averaging is well-behaved there.
+      Then color `world/tsdf` cubes from the voxel channel instead of height.
+      Implement together with dynamics masking — same color-image decode path.
+      Useful for reMap.
 - [ ] Half-float TSDF voxels (halves map memory; ADR 0010 budget headroom).
 - [ ] Occupancy decay (evict transient objects; ADR 0002/0004) — overlaps with
       dynamics masking.
