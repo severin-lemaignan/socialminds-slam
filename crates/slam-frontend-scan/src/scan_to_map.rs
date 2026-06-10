@@ -55,6 +55,18 @@ pub struct ScanToMapConfig {
     pub submap_extent: f64,
     /// Scans integrated into both maps after a submap hand-over.
     pub submap_overlap_scans: usize,
+    /// Loop closure (stage 3a, ADR 0010): attempt re-registration against *frozen*
+    /// submaps whose anchor lies within this radius (m) of the current pose. Proximity
+    /// gating only — appearance signatures (MapClosures) arrive with re-localization.
+    pub loop_radius: f64,
+    /// A verified loop must keep at least this in-band sample fraction (stricter than
+    /// odometry: a wrong loop is worse than a missed one — ADR 0002).
+    pub loop_min_inliers: f64,
+    /// Half-extent (m) and yaw half-extent (rad) of the seed grid searched around the
+    /// current estimate when attempting a loop (covers accumulated drift beyond the
+    /// TSDF truncation basin).
+    pub loop_search_radius: f64,
+    pub loop_search_yaw: f64,
 }
 
 impl Default for ScanToMapConfig {
@@ -81,8 +93,23 @@ impl Default for ScanToMapConfig {
             integrate_rotation: 0.1,
             submap_extent: 20.0,
             submap_overlap_scans: 40,
+            loop_radius: 12.0,
+            loop_min_inliers: 0.55,
+            loop_search_radius: 0.5,
+            loop_search_yaw: 0.12,
         }
     }
+}
+
+/// A verified loop closure: the current base pose re-registered against an old submap.
+#[derive(Debug, Clone, Copy)]
+pub struct LoopClosure {
+    /// Index of the frozen submap the scan re-registered against.
+    pub submap: usize,
+    /// The verified base pose (odometry frame) according to that submap.
+    pub pose: Se2,
+    /// In-band sample fraction of the verifying registration.
+    pub inliers: f64,
 }
 
 /// Scan-to-submap odometry implementing [`SlamSystem`] (ADR 0010 stage 2).
@@ -103,11 +130,21 @@ pub struct ScanToMapOdometry {
     /// 2D surfaces in 3D) will use the 3D field directly (ADR 0010).
     reg: SparseTsdf,
     submap_birth: Se2,
+    /// Arc length travelled since the active submap was born (m). A submap bounds
+    /// *travel*, not displacement — Euclidean distance saturates on a tight loop.
+    submap_travel: f64,
     /// Previous submaps during the hand-over window: registration target while the new
     /// maps fill, integration target alongside them.
     prev_map: Option<SparseTsdf>,
     prev_reg: Option<SparseTsdf>,
+    /// Anchor of the submap currently in `prev_*` (frozen once the overlap ends).
+    prev_anchor: Se2,
     overlap_left: usize,
+    /// Frozen submaps: `(anchor pose at birth, 2D registration field)` — retained for
+    /// loop closure (and, next, re-localization signatures + graph re-posing).
+    frozen: Vec<(Se2, SparseTsdf)>,
+    /// Verified loop closures, in detection order (the pose-graph's future edges).
+    loops: Vec<LoopClosure>,
     /// Pose of the last map fusion (the integration keyframe diet).
     last_integrated: Option<Se2>,
     /// Current base pose in the odometry (anchor-relative, gravity-aligned) frame.
@@ -143,9 +180,13 @@ impl ScanToMapOdometry {
             map,
             reg,
             submap_birth: Se2::identity(),
+            submap_travel: 0.0,
             prev_map: None,
             prev_reg: None,
+            prev_anchor: Se2::identity(),
             overlap_left: 0,
+            frozen: Vec::new(),
+            loops: Vec::new(),
             last_integrated: None,
             current: Se2::identity(),
             last_motion: Se2::identity(),
@@ -302,27 +343,138 @@ impl ScanToMapOdometry {
             self.overlap_left = self.overlap_left.saturating_sub(1);
             if self.overlap_left == 0 {
                 self.prev_map = None;
-                self.prev_reg = None;
+                if let Some(reg) = self.prev_reg.take() {
+                    self.frozen.push((self.prev_anchor, reg));
+                }
             }
         }
     }
 
-    /// Hand over to a fresh submap once the extent is exceeded.
+    /// Hand over to a fresh submap once enough has been *travelled* (arc length, not
+    /// displacement — a tight loop never moves far from its centre).
     fn maybe_spawn_submap(&mut self) {
-        let travelled = self
-            .submap_birth
-            .inverse()
-            .compose(&self.current)
-            .translation_norm();
-        if travelled > self.cfg.submap_extent && self.prev_map.is_none() {
+        if self.submap_travel > self.cfg.submap_extent && self.prev_map.is_none() {
             let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
             self.prev_map = Some(std::mem::replace(&mut self.map, fresh));
             let fresh = SparseTsdf::new(self.cfg.tsdf.clone());
             self.prev_reg = Some(std::mem::replace(&mut self.reg, fresh));
+            self.prev_anchor = self.submap_birth;
             self.overlap_left = self.cfg.submap_overlap_scans;
             self.submap_birth = self.current;
+            self.submap_travel = 0.0;
             self.stats.keyframes += 1; // a submap hand-over is the new "keyframe" event
         }
+    }
+
+    /// Verified loop closures detected so far (the pose-graph's future edges).
+    pub fn loop_closures(&self) -> &[LoopClosure] {
+        &self.loops
+    }
+
+    /// Attempt loop closure against frozen submaps near the current pose: a seed-grid
+    /// of registrations against the old submap's field, accepted only when the best
+    /// solve verifies geometrically (ADR 0002: never trust proximity alone). On
+    /// acceptance the pose snaps to the verified one — the full graph optimisation
+    /// (GTSAM, stage 3b) will distribute the correction instead.
+    fn try_loop_closure(&mut self) {
+        let band = self.cfg.tsdf.truncation * 0.9;
+        let mut best: Option<LoopClosure> = None;
+        for (idx, (anchor, reg)) in self.frozen.iter().enumerate() {
+            let dx = anchor.x - self.current.x;
+            let dy = anchor.y - self.current.y;
+            if dx.hypot(dy) > self.cfg.loop_radius {
+                continue;
+            }
+            let (r, yw) = (self.cfg.loop_search_radius, self.cfg.loop_search_yaw);
+            for sx in [-r, 0.0, r] {
+                for sy in [-r, 0.0, r] {
+                    for st in [-yw, 0.0, yw] {
+                        let seed = Se2::new(
+                            self.current.x + sx,
+                            self.current.y + sy,
+                            self.current.theta + st,
+                        );
+                        let (pose, inliers) = Self::register_against(
+                            reg,
+                            &self.lifted,
+                            &mut self.world,
+                            &mut self.samples,
+                            seed,
+                            band,
+                            self.cfg.max_iterations,
+                            self.cfg.translation_epsilon,
+                            self.cfg.rotation_epsilon,
+                        );
+                        if inliers >= self.cfg.loop_min_inliers
+                            && best.is_none_or(|b| inliers > b.inliers)
+                        {
+                            best = Some(LoopClosure {
+                                submap: idx,
+                                pose,
+                                inliers,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(found) = best {
+            // The verified pose wins over the drifted estimate.
+            self.current = found.pose;
+            self.loops.push(found);
+        }
+    }
+
+    /// One registration of `lifted` (gravity-plane projected) against an arbitrary
+    /// field, without touching odometry state. Returns (pose, in-band fraction).
+    #[allow(clippy::too_many_arguments)]
+    fn register_against(
+        field: &SparseTsdf,
+        lifted: &[Vec3],
+        world: &mut Vec<Vec3>,
+        samples: &mut Vec<Option<SdfSample>>,
+        seed: Se2,
+        band: f64,
+        max_iterations: usize,
+        translation_epsilon: f64,
+        rotation_epsilon: f64,
+    ) -> (Se2, f64) {
+        let mut transform = seed;
+        let mut inliers = 0.0;
+        for _ in 0..max_iterations {
+            world.clear();
+            world.extend(lifted.iter().map(|&p| {
+                let q = Self::apply_planar(&transform, p);
+                Vec3::new(q.x, q.y, 0.0)
+            }));
+            field.sample_batch(world, samples);
+            let mut h = nalgebra::Matrix3::<f64>::zeros();
+            let mut g = nalgebra::Vector3::<f64>::zeros();
+            let mut used = 0usize;
+            for (q, s) in world.iter().zip(samples.iter()) {
+                let Some(s) = s else { continue };
+                if s.sdf.abs() > band {
+                    continue;
+                }
+                let (gx, gy) = (s.gradient.x, s.gradient.y);
+                let jac = nalgebra::Vector3::new(gx, gy, gx * -q.y + gy * q.x);
+                h += jac * jac.transpose();
+                g += jac * s.sdf;
+                used += 1;
+            }
+            inliers = used as f64 / lifted.len().max(1) as f64;
+            if used < 20 {
+                return (transform, 0.0);
+            }
+            let Some(delta) = h.cholesky().map(|ch| ch.solve(&(-g))) else {
+                return (transform, 0.0);
+            };
+            transform = Se2::new(delta.x, delta.y, delta.z).compose(&transform);
+            if delta.x.hypot(delta.y) < translation_epsilon && delta.z.abs() < rotation_epsilon {
+                break;
+            }
+        }
+        (transform, inliers)
     }
 }
 
@@ -381,6 +533,7 @@ impl SlamSystem for ScanToMapOdometry {
             self.stats.coasted += 1;
         }
         self.last_motion = previous.inverse().compose(&self.current);
+        self.submap_travel += self.last_motion.translation_norm();
         self.last_stamp = Some(scan.stamp);
 
         let due = match self.last_integrated {
@@ -392,6 +545,9 @@ impl SlamSystem for ScanToMapOdometry {
             }
         };
         if due {
+            if !self.frozen.is_empty() {
+                self.try_loop_closure();
+            }
             self.integrate(self.current, sensor_origin);
             self.last_integrated = Some(self.current);
             self.maybe_spawn_submap();
