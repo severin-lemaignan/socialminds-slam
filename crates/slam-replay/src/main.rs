@@ -16,8 +16,9 @@ use std::time::Instant;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
 use slam_baseline::{ImuDeadReckoning, Stationary};
-use slam_frontend_scan::{ScanOdometry, ScanOdometryConfig};
-use slam_types::{ImuSample, LaserScan2D, Pose, SlamSystem, Stamp, Trajectory, Vec3};
+use slam_frontend_scan::{ScanOdometry, ScanOdometryConfig, Se2};
+use slam_rig::SensorRig;
+use slam_types::{FrameId, ImuSample, LaserScan2D, Pose, SlamSystem, Stamp, Trajectory, Vec3};
 
 use metrics::ProcessingMetrics;
 
@@ -46,8 +47,24 @@ struct Args {
     imu: Option<PathBuf>,
 
     /// Scan CSV input (`t angle_min angle_increment range_min range_max n r…`).
+    /// Repeatable for multi-lidar; prefix with the sensor's URDF link name
+    /// (`FRAME=FILE`) to place it on the rig — requires `--urdf`.
+    #[arg(long, value_name = "[FRAME=]FILE")]
+    scan: Vec<String>,
+
+    /// Robot URDF: resolves sensor frames and extrinsics (ADR 0009). Without it every
+    /// scan is treated as taken at the base frame (the single-centred-lidar default).
     #[arg(long, value_name = "FILE")]
-    scan: Option<PathBuf>,
+    urdf: Option<PathBuf>,
+
+    /// The body frame the rig is anchored at (a URDF link name).
+    #[arg(
+        long,
+        value_name = "LINK",
+        default_value = "base_link",
+        requires = "urdf"
+    )]
+    base_frame: String,
 
     /// ROS1 bag input: stream topics directly, no CSV extraction stage. Select streams
     /// with `--imu-topic` (or `--gyro-topic` + `--accel-topic`) and/or `--scan-topic`.
@@ -202,9 +219,21 @@ fn input_span_seconds(events: &[Event]) -> f64 {
     }
 }
 
+/// Resolve a frame name against the rig, tolerating tf1's leading slash.
+fn resolve_frame(rig: &SensorRig, name: &str) -> Result<FrameId> {
+    rig.resolve(name.trim_start_matches('/')).with_context(|| {
+        format!("frame {name:?} is not a fixed frame of the rig — check --urdf/--base-frame")
+    })
+}
+
 /// Stream the requested topics from a ROS1 bag in one pass, merging a split
-/// gyro/accel pair into a single 6-axis IMU stream when asked for.
-fn load_bag_inputs(bag: &Path, args: &Args) -> Result<(Vec<ImuSample>, Vec<LaserScan2D>)> {
+/// gyro/accel pair into a single 6-axis IMU stream when asked for. Scans are tagged
+/// with the frame their `header.frame_id` names when a rig is given.
+fn load_bag_inputs(
+    bag: &Path,
+    args: &Args,
+    rig: Option<&SensorRig>,
+) -> Result<(Vec<ImuSample>, Vec<LaserScan2D>)> {
     let imu_topics: Vec<&str> = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
         (Some(imu), None, None) => vec![imu],
         (None, Some(gyro), Some(accel)) => vec![gyro, accel],
@@ -230,17 +259,89 @@ fn load_bag_inputs(bag: &Path, args: &Args) -> Result<(Vec<ImuSample>, Vec<Laser
         _ => Vec::new(),
     };
     let scans = match &args.scan_topic {
-        Some(topic) => streams.scans.remove(topic.as_str()).unwrap_or_default(),
+        Some(topic) => {
+            let mut scans = streams.scans.remove(topic.as_str()).unwrap_or_default();
+            if let Some(rig) = rig {
+                // The messages name their own frame (ADR 0009).
+                let frame_id = streams
+                    .scan_frames
+                    .get(topic.as_str())
+                    .with_context(|| format!("no header.frame_id seen on {topic}"))?;
+                let frame = resolve_frame(rig, frame_id)?;
+                for s in &mut scans {
+                    s.frame = frame;
+                }
+            }
+            scans
+        }
         None => Vec::new(),
     };
     Ok((imu, scans))
 }
 
+/// Load and merge the `--scan [FRAME=]FILE` CSVs into one stamp-sorted stream.
+fn load_scan_csvs(specs: &[String], rig: Option<&SensorRig>) -> Result<Vec<LaserScan2D>> {
+    let mut scans: Vec<LaserScan2D> = Vec::new();
+    for spec in specs {
+        let (frame_name, path) = match spec.split_once('=') {
+            Some((frame, file)) => (Some(frame), PathBuf::from(file)),
+            None => (None, PathBuf::from(spec)),
+        };
+        let frame = match (frame_name, rig) {
+            (Some(name), Some(rig)) => resolve_frame(rig, name)?,
+            (Some(name), None) => bail!("--scan {name}=… needs --urdf to resolve the frame"),
+            (None, _) => FrameId::BASE,
+        };
+        let file = std::fs::File::open(&path)
+            .with_context(|| format!("opening scan file {}", path.display()))?;
+        let mut stream = slam_types::read_scans(io::BufReader::new(file))
+            .with_context(|| format!("reading scan file {}", path.display()))?;
+        for s in &mut stream {
+            s.frame = frame;
+        }
+        scans.extend(stream);
+    }
+    // Multi-lidar CSVs interleave; the event loop needs one time-ordered stream.
+    scans.sort_by_key(|s| s.stamp);
+    Ok(scans)
+}
+
+/// The rig's planar extrinsics table for the scan front-end, warning on lidar frames
+/// mounted visibly out of the base's motion plane.
+fn planar_extrinsics_table(rig: &SensorRig, used: &[FrameId]) -> Vec<Se2> {
+    const PLANARITY_WARN_RAD: f64 = 0.017; // ≈ 1°
+    let table: Vec<(Se2, f64)> = rig
+        .extrinsics()
+        .iter()
+        .map(Se2::planar_projection_of)
+        .collect();
+    for &frame in used {
+        let (_, out_of_plane) = table[frame.0 as usize];
+        if out_of_plane > PLANARITY_WARN_RAD {
+            eprintln!(
+                "slam-replay: warning: lidar frame {:?} is mounted {:.1}° out of the base \
+                 plane; the planar front-end assumes ≈ 0°",
+                rig.frame_name(frame),
+                out_of_plane.to_degrees(),
+            );
+        }
+    }
+    table.into_iter().map(|(se2, _)| se2).collect()
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
 
+    let rig = match &args.urdf {
+        Some(path) => Some(
+            SensorRig::from_urdf_file(path, &args.base_frame)
+                .with_context(|| format!("building rig from {}", path.display()))?,
+        ),
+        None => None,
+    };
+
     let (imu, scans): (Vec<ImuSample>, Vec<LaserScan2D>) = if let Some(bag) = &args.bag {
-        load_bag_inputs(bag, &args)?
+        load_bag_inputs(bag, &args, rig.as_ref())?
     } else {
         let imu = match &args.imu {
             Some(path) => {
@@ -251,16 +352,7 @@ fn main() -> Result<()> {
             }
             None => Vec::new(),
         };
-        let scans = match &args.scan {
-            Some(path) => {
-                let file = std::fs::File::open(path)
-                    .with_context(|| format!("opening scan file {}", path.display()))?;
-                slam_types::read_scans(io::BufReader::new(file))
-                    .with_context(|| format!("reading scan file {}", path.display()))?
-            }
-            None => Vec::new(),
-        };
-        (imu, scans)
+        (imu, load_scan_csvs(&args.scan, rig.as_ref())?)
     };
 
     // Each system needs its primary stream; running it on silence is a usage error.
@@ -286,10 +378,22 @@ fn main() -> Result<()> {
             init.velocity,
             args.gravity,
         )),
-        System::ScanMatching => Box::new(ScanOdometry::anchored_at(
-            init.pose,
-            ScanOdometryConfig::default(),
-        )),
+        System::ScanMatching => {
+            let extrinsics = match &rig {
+                Some(rig) => {
+                    let mut used: Vec<FrameId> = scans.iter().map(|s| s.frame).collect();
+                    used.sort_unstable();
+                    used.dedup();
+                    planar_extrinsics_table(rig, &used)
+                }
+                None => Vec::new(),
+            };
+            Box::new(ScanOdometry::with_extrinsics(
+                init.pose,
+                ScanOdometryConfig::default(),
+                extrinsics,
+            ))
+        }
     };
 
     let events = merged_events(&imu, &scans);
