@@ -134,6 +134,29 @@ positives on the corridor stress sequences.
 ## M5 — Dense map & dynamics
 **Goal:** a usable 3D navigation map that ignores transient objects.
 
+- ☐ **URGENT — rerun "checkerboard": block-aligned voxel holes in the viewer**
+  (2026-06-11, cafe1-1/-2 + depth, `--rerun spawn`, most visible right after a
+  submap hand-over; squares are 8-voxel blocks, aligned to the *submap* grid).
+  **The field is proven innocent**: per-submap STSD dumps — including the exact
+  failing command/config — render dense and organic offline at every zoom, with
+  unimodal per-block stats. Fixed along the way but did **not** remove the
+  pattern: carve-walk per-block chord gap (real bug, regression-tested,
+  `3932486`); every-k-th snapshot decimation → spatial hash (`da31ac7`); linear
+  hash → murmur3 avalanche, verified spatially white offline (`f25ef9d`);
+  stable entity identities at hand-over (`7bc215f`); world-frame anchors —
+  fixed the separate map-displacement-under-`--init-pose-from-tum` bug,
+  user-confirmed (`f25ef9d`); flush-blocking before exit for spawn delivery
+  (`f25ef9d`). **Prime remaining suspect:** viewer-side handling of huge single
+  `Boxes3D` rows (up to ~420 k instances) — if the viewer drops/fails
+  *contiguous instance ranges* (GPU batch/instancing limits), contiguous ranges
+  in our **block-major emission order** are exactly whole 8³ blocks → block
+  holes, in submap frame, worst right after a hand-over re-emission. Next
+  probes: (a) shuffle/Morton-order the emitted instances — holes turning into
+  diffuse speckle confirms range-dropping; (b) split each submap emission into
+  ≤ 64 k-instance rows; (c) check `rerun --version` (viewer binary) vs SDK
+  0.33.0 and retest after upgrading the viewer; (d) reproduce with
+  `--rerun save:` + a fresh viewer on another machine to split SDK vs viewer.
+
 - ◐ Map substrate: `TsdfMap` trait + pure-Rust sparse narrow-band TSDF landed
   (`slam-map`, the CI/default backend); still ☐: **stage 5 — system-OpenVDB
   backend** (`libopenvdb-dev` 10.x, feature-gated `cxx` shim; ADR 0010) with a
