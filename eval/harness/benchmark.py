@@ -48,8 +48,8 @@ class SystemSpec:
 
     name: str
     baseline: str
-    # Which sequence stream the system consumes: "imu" or "scan". Sequences lacking it
-    # skip the system (e.g. scan matching on the scan-less EuRoC).
+    # Which sequence stream the system consumes: "imu", "scan" or "odom". Sequences
+    # lacking it skip the system (e.g. scan matching on the scan-less EuRoC).
     input: str = "imu"
 
 
@@ -73,6 +73,10 @@ def _sequence_inputs(seq: datasets.Sequence, system: SystemSpec) -> dict:
         if seq.scan_csv is None:
             raise ValueError(f"{seq.name} has no scan stream for {system.name}")
         return {"scan_csv": seq.scan_csv}
+    if system.input == "odom":
+        if seq.odom_csv is None:
+            raise ValueError(f"{seq.name} has no odometry stream for {system.name}")
+        return {"odom_csv": seq.odom_csv}
     raise ValueError(f"unknown system input kind {system.input!r}")
 
 
@@ -159,6 +163,9 @@ def run_matrix(
         for system in systems:
             if system.input == "scan" and seq.scan_csv is None and seq.bag_scan_topic is None:
                 print(f"skipping {system.name} on {seq.name}: no scan stream")
+                continue
+            if system.input == "odom" and seq.odom_csv is None:
+                print(f"skipping {system.name} on {seq.name}: no odometry stream")
                 continue
             results.append(
                 run_case(
@@ -248,6 +255,7 @@ def default_systems() -> list[SystemSpec]:
     return [
         SystemSpec(name="stationary", baseline="stationary"),
         SystemSpec(name="imu_dead_reckoning", baseline="dead-reckoning"),
+        SystemSpec(name="odom_dead_reckoning", baseline="odom-dead-reckoning", input="odom"),
         SystemSpec(name="scan_matching", baseline="scan-matching", input="scan"),
         # Scan-to-submap TSDF registration (ADR 0010); the planar matcher above stays
         # in-tree as the parity reference (eval/reference/baselines/m3-planar-frontend).

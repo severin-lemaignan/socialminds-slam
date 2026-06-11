@@ -30,14 +30,27 @@ def test_matrix_and_report(tmp_path):
     results = benchmark.run_matrix(
         [seq], benchmark.default_systems(), workdir=tmp_path, repeats=2, align=False
     )
-    # one row per (sequence, system)
+    # One row per (sequence, system): the synthetic sequence carries every stream
+    # (IMU, wheel odometry, scans), so the full default matrix runs.
     by_system = {r.system: r for r in results}
-    assert set(by_system) == {"stationary", "imu_dead_reckoning"}
+    assert set(by_system) == {
+        "stationary",
+        "imu_dead_reckoning",
+        "odom_dead_reckoning",
+        "scan_matching",
+        "scan_matching_3d",
+    }
 
     # Dead-reckoning must beat stationary on accuracy and run faster than real time.
     assert by_system["imu_dead_reckoning"].ate_rmse_m.mean < by_system["stationary"].ate_rmse_m.mean
     assert by_system["imu_dead_reckoning"].real_time_factor.mean > 1.0
     assert by_system["imu_dead_reckoning"].repeats == 2
+    # The odometry floor drifts visibly but stays bounded; the front-end beats it.
+    assert 0.02 < by_system["odom_dead_reckoning"].ate_rmse_m.mean < 0.3
+    assert (
+        by_system["scan_matching_3d"].ate_rmse_m.mean
+        < by_system["odom_dead_reckoning"].ate_rmse_m.mean
+    )
 
     json_path, md_path = benchmark.write_report(results, tmp_path / "results")
     assert json_path.exists() and md_path.exists()

@@ -6,7 +6,11 @@ check (ADR 0005) and the job CI runs:
 
 - the pipeline (generate → engine → TUM → evo + compute metrics) works end to end, GPU-free;
 - ``dead-reckoning`` beats ``stationary`` on a moving sequence;
-- ``dead-reckoning`` drift stays within an absolute bound and runs faster than real time.
+- ``dead-reckoning`` drift stays within an absolute bound and runs faster than real time;
+- ``odom-dead-reckoning`` replays the synthetic wheel odometry: visible drift (the
+  imperfection model is real), but bounded and well under stationary;
+- ``scan-matching-3d`` registers the synthetic scans: beats the odometry floor and runs
+  faster than real time — the front-end itself, exercised on every CI run.
 
 Run: ``python -m harness.selftest`` (from ``eval/``).
 """
@@ -32,6 +36,16 @@ class Gates:
     dr_ate_max: float = 0.10
     # ...and it must run faster than real time.
     dr_min_real_time_factor: float = 1.0
+    # Wheel-odometry replay: drift must be *visible* (the imperfection model is doing its
+    # job — observed ~0.095 m) yet bounded, and clearly under stationary.
+    odom_ate_min: float = 0.02
+    odom_ate_max: float = 0.30
+    # The scan front-end on synthetic scans: most of the observed ~0.06 m is the
+    # planar-vs-3D z convention (the estimate's z=0 vs the trajectory's ±0.1 m), so the
+    # bound is tight around it; it must also beat the odometry floor and run real-time.
+    scan3d_ate_max: float = 0.12
+    scan3d_beats_odom_ratio: float = 0.8
+    scan3d_min_real_time_factor: float = 1.0
 
 
 def run(workdir: Path, gates: Gates = Gates()) -> bool:
@@ -48,10 +62,27 @@ def run(workdir: Path, gates: Gates = Gates()) -> bool:
     dr = benchmark.run_case(
         seq, benchmark.SystemSpec("imu_dead_reckoning", "dead-reckoning"), **common
     )
+    odom = benchmark.run_case(
+        seq,
+        benchmark.SystemSpec("odom_dead_reckoning", "odom-dead-reckoning", input="odom"),
+        **common,
+    )
+    scan3d = benchmark.run_case(
+        seq,
+        benchmark.SystemSpec("scan_matching_3d", "scan-matching-3d", input="scan"),
+        **common,
+    )
 
     print(f"sequence: {seq.duration_s:.0f} s synthetic, {seq.source}")
-    print(f"  stationary      ATE rmse: {stat.ate_rmse_m.mean:.4f}")
-    print(f"  dead-reckoning  ATE rmse: {dr.ate_rmse_m.mean:.4f}  RPE: {dr.rpe_rmse_m.mean:.4f}")
+    print(f"  stationary           ATE rmse: {stat.ate_rmse_m.mean:.4f}")
+    print(
+        f"  dead-reckoning       ATE rmse: {dr.ate_rmse_m.mean:.4f}  RPE: {dr.rpe_rmse_m.mean:.4f}"
+    )
+    print(f"  odom-dead-reckoning  ATE rmse: {odom.ate_rmse_m.mean:.4f}")
+    print(
+        f"  scan-matching-3d     ATE rmse: {scan3d.ate_rmse_m.mean:.4f}  "
+        f"({scan3d.real_time_factor.mean:.0f}x real-time)"
+    )
     print(
         f"  dead-reckoning  compute: {dr.real_time_factor.mean:.0f}x real-time, "
         f"p99 {dr.latency_p99_us.mean:.2f} us, peak {dr.peak_rss_mb.mean:.1f} MB"
@@ -77,6 +108,32 @@ def run(workdir: Path, gates: Gates = Gates()) -> bool:
             "dead-reckoning runs in real time",
             dr.real_time_factor.mean >= gates.dr_min_real_time_factor,
             f"{dr.real_time_factor.mean:.1f} >= {gates.dr_min_real_time_factor}",
+        ),
+        (
+            "odom replay drifts visibly (imperfection model active)",
+            odom.ate_rmse_m.mean >= gates.odom_ate_min,
+            f"{odom.ate_rmse_m.mean:.4f} >= {gates.odom_ate_min}",
+        ),
+        (
+            "odom replay drift bounded",
+            odom.ate_rmse_m.mean <= gates.odom_ate_max,
+            f"{odom.ate_rmse_m.mean:.4f} <= {gates.odom_ate_max}",
+        ),
+        (
+            "scan-matching-3d error bounded",
+            scan3d.ate_rmse_m.mean <= gates.scan3d_ate_max,
+            f"{scan3d.ate_rmse_m.mean:.4f} <= {gates.scan3d_ate_max}",
+        ),
+        (
+            "scan-matching-3d beats the odometry floor",
+            scan3d.ate_rmse_m.mean <= gates.scan3d_beats_odom_ratio * odom.ate_rmse_m.mean,
+            f"{scan3d.ate_rmse_m.mean:.4f} <= "
+            f"{gates.scan3d_beats_odom_ratio} * {odom.ate_rmse_m.mean:.4f}",
+        ),
+        (
+            "scan-matching-3d runs in real time",
+            scan3d.real_time_factor.mean >= gates.scan3d_min_real_time_factor,
+            f"{scan3d.real_time_factor.mean:.1f} >= {gates.scan3d_min_real_time_factor}",
         ),
     ]
     ok = True

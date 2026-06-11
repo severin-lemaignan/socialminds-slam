@@ -49,6 +49,7 @@ def run_with_metrics(
     out_tum: Path,
     *,
     scan_csv: Path | None = None,
+    odom_csv: Path | None = None,
     bag: Path | None = None,
     gyro_topic: str | None = None,
     accel_topic: str | None = None,
@@ -77,6 +78,8 @@ def run_with_metrics(
         cmd += ["--imu", str(imu_csv)]
     if scan_csv is not None:
         cmd += ["--scan", str(scan_csv)]
+    if odom_csv is not None:
+        cmd += ["--odom", str(odom_csv)]
     if bag is not None:
         cmd += ["--bag", str(bag)]
         if gyro_topic is not None:

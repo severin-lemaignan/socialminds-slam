@@ -38,6 +38,8 @@ class Sequence:
     has_gyro: bool
     # Planar laser scans (scan CSV), when the source records a 2D lidar (M3 front-end).
     scan_csv: Path | None = None
+    # Wheel odometry (TUM format), when the source records the platform's own estimate.
+    odom_csv: Path | None = None
     # Direct-bag replay: `slam-replay --bag` streams these topics straight from the ROS1
     # bag, skipping CSV materialisation entirely (the split IMU is merged in Rust).
     bag: Path | None = None
@@ -70,8 +72,12 @@ def materialize_synthetic(workdir: Path, spec=None) -> Sequence:
     workdir.mkdir(parents=True, exist_ok=True)
     imu_csv = workdir / "imu.csv"
     gt_tum = workdir / "groundtruth.tum"
+    scan_csv = workdir / "scan.csv"
+    odom_tum = workdir / "odom.tum"
     synthetic.write_imu_csv(samples, imu_csv)
     synthetic.write_groundtruth_tum(samples, gt_tum)
+    synthetic.write_scan_csv(synthetic.generate_scans(samples), scan_csv)
+    synthetic.write_odom_tum(synthetic.derive_odometry(samples), odom_tum)
     return Sequence(
         name="synthetic",
         source="synthetic",
@@ -79,6 +85,8 @@ def materialize_synthetic(workdir: Path, spec=None) -> Sequence:
         groundtruth_tum=gt_tum,
         duration_s=spec.duration_s,
         has_gyro=True,
+        scan_csv=scan_csv,
+        odom_csv=odom_tum,
     )
 
 

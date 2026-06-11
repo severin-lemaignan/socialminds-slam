@@ -1,8 +1,14 @@
-"""Synthetic trajectory + IMU generator.
+"""Synthetic trajectory + IMU + wheel-odometry + 2D-laser-scan generator.
 
-Produces a *ground-truth* trajectory and an IMU stream that is exactly consistent with
+Produces a *ground-truth* trajectory and sensor streams that are exactly consistent with
 it, with **no downloads and no GPU** — the zero-dependency dataset the CI benchmark runs
-on (ADR 0005).
+on (ADR 0005). Beyond the IMU it can derive:
+
+- a **wheel-odometry** stream (TUM format) with a deterministic imperfection model
+  (translation scale error + yaw-rate bias — the two dominant wheel-odometry failure
+  modes), so `odom_dead_reckoning` shows bounded, reproducible drift;
+- **2D laser scans** raycast against a rectangular room around the trajectory, with
+  deterministic per-beam range noise, so the scan front-ends run end-to-end in CI.
 
 Design constraints that make the IMU baselines reconstructable:
 
@@ -138,6 +144,151 @@ def write_groundtruth_tum(samples: list[Sample], path: Path) -> None:
             )
 
 
+# ------------------------------------------------------------------- wheel odometry
+
+
+@dataclass(frozen=True)
+class OdomSpec:
+    """Deterministic wheel-odometry imperfection.
+
+    The two dominant failure modes of real wheel odometry, applied to the ground-truth
+    relative motion: a translation **scale** error (wrong wheel radius / slip) and a
+    **yaw-rate bias** (heading drift). Deterministic, so the resulting baseline error is
+    stable enough to gate on.
+    """
+
+    rate_hz: float = 20.0
+    scale: float = 1.02
+    yaw_rate_bias: float = 0.004  # rad/s
+
+
+def _yaw(s: Sample) -> float:
+    """Yaw of a yaw-only quaternion (the generator's orientations are yaw-only)."""
+    return 2.0 * math.atan2(s.qz, s.qw)
+
+
+def derive_odometry(samples: list[Sample], spec: OdomSpec = OdomSpec()) -> list[tuple]:
+    """Integrate spec-perturbed ground-truth relative motion → `(t, x, y, yaw)` rows.
+
+    The stream is the platform's pose in its own odometry frame (planar, like a real
+    wheel-odometry estimate): exact at t=0, drifting with path length afterwards.
+    """
+    if not samples:
+        return []
+    rate = samples[1].t - samples[0].t if len(samples) > 1 else 0.0
+    stride = max(1, round(1.0 / (spec.rate_hz * rate))) if rate > 0 else 1
+    picked = samples[::stride]
+
+    out = [(picked[0].t, 0.0, 0.0, 0.0)]
+    x = y = th = 0.0
+    for prev, cur in zip(picked, picked[1:]):
+        # Ground-truth relative motion in the previous body frame...
+        c, s = math.cos(_yaw(prev)), math.sin(_yaw(prev))
+        wx, wy = cur.px - prev.px, cur.py - prev.py
+        dx, dy = c * wx + s * wy, -s * wx + c * wy
+        dth = _yaw(cur) - _yaw(prev)
+        # ...perturbed by the imperfection model, composed onto the odometry pose.
+        dt = cur.t - prev.t
+        dx, dy = dx * spec.scale, dy * spec.scale
+        dth += spec.yaw_rate_bias * dt
+        c, s = math.cos(th), math.sin(th)
+        x += c * dx - s * dy
+        y += s * dx + c * dy
+        th += dth
+        out.append((cur.t, x, y, th))
+    return out
+
+
+def write_odom_tum(rows: list[tuple], path: Path) -> None:
+    """Write the odometry stream in TUM format (`slam-replay --odom`)."""
+    with Path(path).open("w") as f:
+        f.write("# timestamp tx ty tz qx qy qz qw  (planar wheel odometry)\n")
+        for t, x, y, th in rows:
+            f.write(
+                f"{t:.9f} {x:.9f} {y:.9f} 0.0 "
+                f"0.0 0.0 {math.sin(th / 2.0):.9f} {math.cos(th / 2.0):.9f}\n"
+            )
+
+
+# ----------------------------------------------------------------------- laser scans
+
+
+@dataclass(frozen=True)
+class ScanSpec:
+    """A planar lidar in a rectangular room enclosing the trajectory.
+
+    The default room leaves 2–3 m of clearance around the default trajectory's
+    [0, 3] × [0, 2] footprint; the 270° fan always sees at least two walls, so the
+    planar solve is never degenerate.
+    """
+
+    rate_hz: float = 10.0
+    n_beams: int = 540
+    fov_rad: float = 1.5 * math.pi
+    range_min: float = 0.05
+    range_max: float = 25.0
+    noise_m: float = 0.01
+    # Room walls: (x_min, x_max, y_min, y_max).
+    room: tuple[float, float, float, float] = (-2.0, 5.0, -2.0, 4.0)
+
+
+def _noise_unit(beam: int, scan: int) -> float:
+    """Deterministic pseudo-noise in [-1, 1) — no RNG state, reproducible per beam."""
+    v = math.sin(beam * 12.9898 + scan * 78.233) * 43758.5453
+    return 2.0 * (v - math.floor(v)) - 1.0
+
+
+def _raycast_box(px: float, py: float, angle: float, room: tuple) -> float:
+    """Distance from (px, py) along `angle` to the enclosing box (always hits)."""
+    x_min, x_max, y_min, y_max = room
+    dx, dy = math.cos(angle), math.sin(angle)
+    best = math.inf
+    if dx > 1e-12:
+        best = min(best, (x_max - px) / dx)
+    elif dx < -1e-12:
+        best = min(best, (x_min - px) / dx)
+    if dy > 1e-12:
+        best = min(best, (y_max - py) / dy)
+    elif dy < -1e-12:
+        best = min(best, (y_min - py) / dy)
+    return best
+
+
+def generate_scans(samples: list[Sample], spec: ScanSpec = ScanSpec()) -> list[tuple]:
+    """Raycast scans at the ground-truth poses → `(t, ranges)` rows."""
+    if not samples:
+        return []
+    rate = samples[1].t - samples[0].t if len(samples) > 1 else 0.0
+    stride = max(1, round(1.0 / (spec.rate_hz * rate))) if rate > 0 else 1
+    angle_min = -spec.fov_rad / 2.0
+    inc = spec.fov_rad / (spec.n_beams - 1)
+
+    out = []
+    for k, s in enumerate(samples[::stride]):
+        yaw = _yaw(s)
+        ranges = []
+        for i in range(spec.n_beams):
+            r = _raycast_box(s.px, s.py, yaw + angle_min + i * inc, spec.room)
+            r += spec.noise_m * _noise_unit(i, k)
+            ranges.append(r if spec.range_min <= r <= spec.range_max else math.inf)
+        out.append((s.t, ranges))
+    return out
+
+
+def write_scan_csv(scans: list[tuple], path: Path, spec: ScanSpec = ScanSpec()) -> None:
+    """Write scans in the `slam-replay --scan` CSV format."""
+    angle_min = -spec.fov_rad / 2.0
+    inc = spec.fov_rad / (spec.n_beams - 1)
+    with Path(path).open("w") as f:
+        f.write("# t angle_min angle_increment range_min range_max n r0 .. r(n-1)\n")
+        for t, ranges in scans:
+            head = (
+                f"{t:.9f} {angle_min:.9f} {inc:.9f} "
+                f"{spec.range_min} {spec.range_max} {len(ranges)}"
+            )
+            f.write(head + " " + " ".join(f"{r:.4f}" for r in ranges) + "\n")
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
 
@@ -152,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     args.out_dir.mkdir(parents=True, exist_ok=True)
     write_imu_csv(samples, args.out_dir / "imu.csv")
     write_groundtruth_tum(samples, args.out_dir / "groundtruth.tum")
+    write_odom_tum(derive_odometry(samples), args.out_dir / "odom.tum")
+    write_scan_csv(generate_scans(samples), args.out_dir / "scan.csv")
     print(f"wrote {len(samples)} samples to {args.out_dir}")
     return 0
 
