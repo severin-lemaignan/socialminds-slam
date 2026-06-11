@@ -112,10 +112,14 @@ impl Default for ScanToMapConfig {
                 // with the odom prior; carved: 2.7 m / 0.90 m). Short runs hide
                 // this — the ghosts are only harmful once current people overlap
                 // earlier stamps.
-                carve_factor: 0.5,
-                // No proportional margin: the registration field needs the
-                // aggressive eviction (busy-gate ATE 0.31 vs 1.03 with it), and
-                // its erosion is invisible — the lidar plane re-stamps it live.
+                // Carved like every active field (ADR 0014): uncarved, a busy
+                // crowd's stale stamps collapse tracking (ATE 114 m scan-only).
+                // 0.7/crossing re-calibrates for the fixed full-chord free-segment
+                // walk (0.5 was tuned against its ~half coverage; swept 2026-06-11:
+                // 0.5 -> 1.39, 0.7 -> 0.19, 0.8 -> 0.88 busy-60 ATE). No
+                // proportional margin: aggressive eviction is load-bearing here,
+                // and registration-field erosion is invisible to every consumer.
+                carve_factor: 0.7,
                 carve_relative_margin: 0.0,
             },
             // 5 cm / 15 cm: the swept trade-off (see commit). Finer fields score

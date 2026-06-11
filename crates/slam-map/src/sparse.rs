@@ -147,8 +147,14 @@ impl SparseTsdf {
             |s: f64| margin == 0.0 || hit_dist - s > (margin * s).max(2.0 * self.cfg.truncation);
         let stride = voxel * BLOCK_SIDE as f64 * 0.5;
         // Phase 1: find allocated spans (merged, so descent never revisits a voxel).
+        // The span must extend on EVERY probe inside an allocated block, not only on
+        // key change: a diagonal ray spends several probes in one block (chord up to
+        // 0.69 m vs the 0.4 m the first probe covers), and skipping the later probes
+        // left a periodic uncarved gap per block — visible as block-aligned
+        // "big pixel" artifacts in the map.
         let mut spans: Vec<(f64, f64)> = Vec::new();
         let mut last_key = None;
+        let mut last_relevant = false;
         let mut s = 0.0;
         while s <= free_len + stride {
             let sc = s.min(free_len);
@@ -157,12 +163,13 @@ impl SparseTsdf {
             let (key, _) = split(idx.0, idx.1, idx.2);
             if last_key != Some(key) {
                 last_key = Some(key);
-                if self.blocks.contains_key(&key) {
-                    let (a, b) = ((sc - stride).max(0.0), (sc + stride).min(free_len));
-                    match spans.last_mut() {
-                        Some(span) if a <= span.1 => span.1 = b,
-                        _ => spans.push((a, b)),
-                    }
+                last_relevant = self.blocks.contains_key(&key);
+            }
+            if last_relevant {
+                let (a, b) = ((sc - stride).max(0.0), (sc + stride).min(free_len));
+                match spans.last_mut() {
+                    Some(span) if a <= span.1 => span.1 = b,
+                    _ => spans.push((a, b)),
                 }
             }
             if sc >= free_len {
@@ -571,6 +578,53 @@ mod tests {
             off.integrate_points(origin, &points);
         }
         assert_eq!(on.allocated_voxels(), off.allocated_voxels());
+    }
+
+    /// A diagonal ray's free segment must contradict EVERY voxel it crosses — the
+    /// block-skip walk once only opened a span on block-key change, so chords
+    /// longer than the probe coverage left a periodic uncarved gap per block
+    /// (block-aligned "big pixel" artifacts in the map).
+    #[test]
+    fn diagonal_free_segments_carve_without_block_gaps() {
+        let mut map = SparseTsdf::new(TsdfConfig {
+            carve_relative_margin: 0.0,
+            ..TsdfConfig::default()
+        });
+        // Ghost geometry along the diagonal y = x, spanning several blocks. Each
+        // point is stamped from its own short perpendicular ray so the setup's
+        // free segments cannot cross (and carve) the other ghosts.
+        let ghosts: Vec<Vec3> = (8..=80)
+            .map(|i| Vec3::new(i as f64 * 0.05, i as f64 * 0.05, 0.2))
+            .collect();
+        for &g in &ghosts {
+            let o = g + Vec3::new(
+                -std::f64::consts::FRAC_1_SQRT_2,
+                std::f64::consts::FRAC_1_SQRT_2,
+                0.0,
+            );
+            map.integrate_points(o, &[g]);
+        }
+        let weight_at = |m: &SparseTsdf, p: Vec3| {
+            let s = 1.0 / m.cfg.voxel_size;
+            m.voxel(
+                (p.x * s).floor() as i32,
+                (p.y * s).floor() as i32,
+                (p.z * s).floor() as i32,
+            )
+            .weight
+        };
+        let before: Vec<f32> = ghosts.iter().map(|&p| weight_at(&map, p)).collect();
+        assert!(before.iter().all(|&w| w > 0.0), "ghosts must be allocated");
+
+        // One collinear ray from the origin sees through all of them to a far hit.
+        map.integrate_points(Vec3::new(0.0, 0.0, 0.2), &[Vec3::new(8.0, 8.0, 0.2)]);
+        for (i, (&p, &w0)) in ghosts.iter().zip(before.iter()).enumerate() {
+            let w1 = weight_at(&map, p);
+            assert!(
+                w1 < w0,
+                "ghost {i} at {p:?} escaped the free segment: {w0} -> {w1}"
+            );
+        }
     }
 
     fn wall_points() -> Vec<Vec3> {
