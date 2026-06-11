@@ -10,13 +10,17 @@
 //! - [`ImuDeadReckoning`] integrates the IMU (strapdown). It tracks motion well over short
 //!   spans and drifts over long ones — exactly the behaviour the harness should reveal, and
 //!   it must beat [`Stationary`] on any real trajectory.
+//! - [`OdomDeadReckoning`] replays the platform's wheel odometry, re-anchored at the
+//!   initial pose — the floor for anything consuming odometry as a prior (ADR 0012).
 
 #![forbid(unsafe_code)]
 
 mod dead_reckoning;
+mod odom_dead_reckoning;
 mod stationary;
 
 pub use dead_reckoning::{ImuDeadReckoning, STANDARD_GRAVITY};
+pub use odom_dead_reckoning::OdomDeadReckoning;
 pub use stationary::Stationary;
 
 /// The system contract now lives in `slam-types` (front-ends implement it too);

@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, ValueEnum};
-use slam_baseline::{ImuDeadReckoning, Stationary};
+use slam_baseline::{ImuDeadReckoning, OdomDeadReckoning, Stationary};
 use slam_frontend_scan::{
     ScanOdometry, ScanOdometryConfig, ScanToMapConfig, ScanToMapOdometry, Se2,
 };
@@ -33,6 +33,9 @@ enum System {
     Stationary,
     /// IMU strapdown integration.
     DeadReckoning,
+    /// Wheel-odometry replay, re-anchored at the initial pose (ADR 0012's floor).
+    #[value(name = "odom-dead-reckoning")]
+    OdomDeadReckoning,
     /// 2D scan-to-keyframe odometry (point-to-line ICP, ADR 0007).
     ScanMatching,
     /// Scan-to-submap odometry: 3D fans registered against a TSDF (ADR 0010).
@@ -60,6 +63,12 @@ struct Args {
     /// (`FRAME=FILE`) to place it on the rig — requires `--urdf`.
     #[arg(long, value_name = "[FRAME=]FILE")]
     scan: Vec<String>,
+
+    /// Wheel-odometry input in TUM format (`t x y z qx qy qz qw`, the platform's pose
+    /// in its odometry frame). Consumed as relative motion, so the frame's origin is
+    /// irrelevant (ADR 0012).
+    #[arg(long, value_name = "FILE")]
+    odom: Option<PathBuf>,
 
     /// Robot URDF: resolves sensor frames and extrinsics (ADR 0009). Without it every
     /// scan is treated as taken at the base frame (the single-centred-lidar default).
@@ -652,6 +661,27 @@ fn load_imu_csvs(specs: &[String], rig: Option<&SensorRig>) -> Result<Vec<ImuSam
     Ok(samples)
 }
 
+/// Load `--odom` (TUM format) as a stamp-sorted odometry stream. Untagged: wheel
+/// odometry is the platform's own pose, always expressed at the base frame.
+fn load_odom_tum(path: Option<&Path>) -> Result<Vec<slam_types::OdomSample>> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
+    let traj = Trajectory::read_tum_file(path)
+        .with_context(|| format!("reading odometry TUM file {}", path.display()))?;
+    let mut samples: Vec<slam_types::OdomSample> = traj
+        .poses()
+        .iter()
+        .map(|p| slam_types::OdomSample {
+            stamp: p.stamp,
+            frame: FrameId::BASE,
+            pose: p.pose,
+        })
+        .collect();
+    samples.sort_by_key(|s| s.stamp);
+    Ok(samples)
+}
+
 /// The rig's SE(3) extrinsics table for the scan front-end, warning on lidar frames
 /// mounted visibly out of the base's motion plane (the front-end models the lidar as
 /// scanning that plane; mounting tilt is not yet compensated — only dynamic IMU tilt).
@@ -729,7 +759,7 @@ fn main() -> Result<()> {
             load_imu_csvs(&args.imu, rig.as_ref())?,
             load_scan_csvs(&args.scan, rig.as_ref())?,
             Vec::new(),
-            Vec::new(),
+            load_odom_tum(args.odom.as_deref())?,
         )
     };
 
@@ -737,6 +767,9 @@ fn main() -> Result<()> {
     match args.system {
         System::Stationary | System::DeadReckoning if imu.is_empty() => {
             bail!("this system consumes IMU data: pass --imu, or --bag with IMU topics")
+        }
+        System::OdomDeadReckoning if odometry.is_empty() => {
+            bail!("odom-dead-reckoning consumes odometry: pass --odom, or --bag with --odom-topic")
         }
         System::ScanMatching if scans.is_empty() => {
             bail!("scan-matching consumes laser scans: pass --scan, or --bag with --scan-topic")
@@ -778,6 +811,9 @@ fn main() -> Result<()> {
             init.velocity,
             args.gravity,
         ))),
+        System::OdomDeadReckoning => {
+            Engine::Dyn(Box::new(OdomDeadReckoning::with_initial_pose(init.pose)))
+        }
         System::ScanMatching | System::ScanMatching3d => {
             let extrinsics = match &rig {
                 Some(rig) => {
