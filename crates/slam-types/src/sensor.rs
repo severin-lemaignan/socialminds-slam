@@ -131,6 +131,45 @@ pub struct PointCloud {
     pub colors: Vec<[u8; 3]>,
 }
 
+/// A per-pixel dynamics mask over a camera image: `true` = the pixel belongs to a
+/// dynamic object (person, chair, …) and must not enter the map or registration.
+/// Produced by a segmentation model on the colour stream (ADR 0015), consumed at
+/// depth-ingest time — an *enhancer, never a foundation* (ADR 0014): a missing or
+/// stale mask degrades to the unmasked pipeline, which must stand on its own.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PixelMask {
+    /// Stamp of the image the mask was computed on (gated against the depth frame's
+    /// stamp at ingest, like the colour pairing).
+    pub stamp: Stamp,
+    pub width: usize,
+    pub height: usize,
+    /// Row-major `width × height`; `true` = masked (reject).
+    pub data: Vec<bool>,
+}
+
+impl PixelMask {
+    /// Whether the pixel `(u, v)` of an image `width × height` is masked, rescaling
+    /// proportionally when the mask was computed at a different resolution (e.g.
+    /// aligned depth at a different size than the colour stream).
+    #[inline]
+    pub fn masks(&self, u: usize, v: usize, width: usize, height: usize) -> bool {
+        if self.data.len() != self.width * self.height || width == 0 || height == 0 {
+            return false;
+        }
+        let mu = (u * self.width / width).min(self.width - 1);
+        let mv = (v * self.height / height).min(self.height - 1);
+        self.data[mv * self.width + mu]
+    }
+
+    /// Fraction of pixels masked (diagnostics).
+    pub fn coverage(&self) -> f64 {
+        if self.data.is_empty() {
+            return 0.0;
+        }
+        self.data.iter().filter(|&&m| m).count() as f64 / self.data.len() as f64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
