@@ -162,11 +162,16 @@ positives on the corridor stress sequences.
   overwhelmingly good and are what repairs the newborn-submap drift. The visible
   symptom (rerun: the final TSDF fans out into rotated wall copies during the
   last ~8 s) is the crowd-biased birth anchor of the last submap plus the graph
-  re-distributing corrections across all anchors. Candidates:
-  confirmation-delayed integration (stage voxels N keyframes before they enter
-  the registration band), inlier-only integration, or seeding the newborn field
-  from the predecessor's surviving (carve-survived) geometry; measure against the
-  busy gate.
+  re-distributing corrections across all anchors. **Two candidates measured and
+  rejected 2026-06-11** (full verdicts in ADR 0014's alternatives): confirmation-
+  gated sampling (busy decades 0.13 → 0.007 m, but starves sparse long-range
+  stamping — ring circuit broke in every variant) and predecessor seeding (fixes
+  the first hand-over, but seed-of-seed chains re-create cross-submap error
+  feedback: busy-120 0.90 → 2.76 m). The carved + odom + graph state remains the
+  best measured. Remaining directions: per-point *integration-time* classification
+  via the clean-map plan's mask hook (sidecar masks first — works for depth;
+  scans need a geometric equivalent), and re-measuring on the real two-lidar rig
+  (opposite-corner scanners halve the occlusion that drives the newborn problem).
 - ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) — still
   **the top depth-path accuracy blocker**: three independent measurements say
   un-masked people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1;

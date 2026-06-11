@@ -129,3 +129,18 @@ One policy currently serves three memories with different jobs:
   the symmetric-update standard (KinectFusion lineage) — but it *allocates* free-space
   voxels (narrow-band memory budget gone) and still evicts at dilution speed. The
   asymmetric weight-decay rule keeps the band sparse and evicts geometrically.
+- **Confirmation-gated sampling** (voxels invisible to registration until stamped by
+  ≥2 distinct sweeps; measured 2026-06-11): spectacular on the busy scenario
+  (per-decade error 0.13 → 0.007 m) but irreconcilable with sparse long-range
+  stamping — at range, beam spacing exceeds the voxel size several-fold, so wall
+  voxels are re-stamped only every few sweeps and a 270° circuit (ring test) starves:
+  every variant tried (strict / observed / young-neutral inlier denominators;
+  carve-revocation on / off / same-sweep-protected / 3–6-sweep grace) broke either
+  the ring (coast spiral, lost loops) or re-admitted the follower attractor (flat
+  0.3 m bias). Rejected; the mechanism wants per-point *integration-time*
+  classification (the masking hook), not sample-time gating.
+- **Seeding newborn submaps from the predecessor's carve-survived field** (measured
+  2026-06-11): fixes the first hand-over (busy-60 tail 0.51 → 0.40) but seed-of-seed
+  chains across hand-overs reintroduce cross-submap error feedback — the precise
+  failure bounded submaps exist to prevent (busy-120: 0.90 → 2.76 m, loops 181 → 44).
+  Rejected.
