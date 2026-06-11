@@ -156,7 +156,13 @@ positives on the corridor stress sequences.
   0.04 → 0.5–1.0 m right after each birth) — a freshly-born field built from its
   first keyframes in a crowd is wall-thin and people-rich until carving and
   reinforcement catch up; the pose graph repairs most of it where revisits exist
-  (final-decade 1.05 m open-loop vs 0.51 with loops+graph). Candidates:
+  (final-decade 1.05 m open-loop vs 0.51 with loops+graph). Loop verification is
+  **not** the lever: tightening `loop_min_inliers` 0.55 → 0.65/0.75 prunes
+  181 → 52/31 loops and *worsens* ATE 0.31 → 0.54/0.55 — the loops are
+  overwhelmingly good and are what repairs the newborn-submap drift. The visible
+  symptom (rerun: the final TSDF fans out into rotated wall copies during the
+  last ~8 s) is the crowd-biased birth anchor of the last submap plus the graph
+  re-distributing corrections across all anchors. Candidates:
   confirmation-delayed integration (stage voxels N keyframes before they enter
   the registration band), inlier-only integration, or seeding the newborn field
   from the predecessor's surviving (carve-survived) geometry; measure against the
