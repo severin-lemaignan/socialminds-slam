@@ -159,11 +159,11 @@ riskier fusion changes:
 The TSDF realization of the occupancy-decay commitment (ADR 0002/0004),
 evicting people/door ghosts that input filtering cannot catch:
 
-1. **Asymmetric free-space carving**: rays already traverse the free band;
-   today a confident surface voxel observed as free just gets diluted by
-   1/weight. Add an explicit carve rule — a strongly-free observation against
-   a confident occupied voxel decays its weight multiplicatively (rate
-   config-gated). Standard nvblox/Voxblox-style dynamics eviction.
+1. **Asymmetric free-space carving** — ✅ **done** (ADR 0014, 2026-06-11):
+   multiplicative weight decay along free segments, map-product field only,
+   block-skip ray walk; measured 98.7 % stale-ghost eviction on the synthetic
+   dynamic variant at ~1 ms p99, CI-gated (`eval/tests/test_map_hygiene.py`,
+   maskless by construction). Depth rays carve the same field automatically.
 2. **Weight-cap sanity**: the local field's cap of 100 000 means early wrong
    geometry is unrevisable; tune toward the literature's 64–256 so the map
    stays plastic. Benchmark-gated — the high cap may be load-bearing for

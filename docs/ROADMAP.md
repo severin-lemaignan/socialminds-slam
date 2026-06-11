@@ -113,6 +113,10 @@ on OpenLORIS/TUM RPE.
   → 3D field); corrections distributed by the GTSAM pose graph (39 verified
   closures on cafe1-1). Proximity-gated for now. Known niche gap: loops during the
   submap hand-over overlap window still snap instead of optimising.
+  ⚠ Measured 2026-06-11: loop events dominate the latency tail — cafe1 p99 is
+  ~1–2 ms open-loop but **15–18 ms with loops on** (seed-grid solves + per-loop
+  GTSAM). The archived compute gate predates loops; loop-event cost needs its own
+  budget (or async optimisation) before the robot.
 - ☐ MapClosures-style per-submap appearance signatures (replaces proximity gating;
   the corridor-aliasing defence) + **stage 4: re-localization service** — < 1 s
   cold-start / tracking-loss localization over frozen-submap signatures, scored
@@ -135,11 +139,21 @@ positives on the corridor stress sequences.
   backend** (`libopenvdb-dev` 10.x, feature-gated `cxx` shim; ADR 0010) with a
   conformance suite vs `SparseTsdf` and in-process grid hand-over to reMap;
   GPU TSDF/ESDF
-- ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) + occupancy
-  decay — **the top accuracy blocker**: three independent measurements say un-masked
-  people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1; depth→pose
-  fusion 0.16→3.0; laser-band depth contribution 0.164→0.357). Unlocks the two gated
-  bridges (`depth_updates_pose`, `reg_band_tolerance`).
+- ☑ **Free-space carving** (ADR 0014, the occupancy-decay commitment realised as
+  decay-by-contradiction): beams passing through a voxel evict it (multiplicative
+  weight decay, map-product field only; registration fields keep long memory; no
+  time decay; frozen submaps immutable). Measured on the synthetic dynamic variant:
+  stale ghost voxels 2384 → 30 (98.7 % evicted; the survivors are people *currently
+  standing there* — truthful), walls intact, ATE unchanged, ~1 ms p99 cost
+  (no-loops protocol) — CI-gated end-to-end (`test_map_hygiene.py`), maskless by
+  construction.
+- ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) — still
+  **the top depth-path accuracy blocker**: three independent measurements say
+  un-masked people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1;
+  depth→pose fusion 0.16→3.0; laser-band depth contribution 0.164→0.357). Unlocks
+  the two gated bridges (`depth_updates_pose`, `reg_band_tolerance`). ⚠ Per
+  ADR 0014: the robot's cameras sit near floor level, so masking may never be
+  robust — it is an *enhancer*; every gate must also pass maskless.
 - ☐ Clean-3D-map: depth outlier filtering, post-hoc model filtering, compaction →
   a *compact* map suitable for downstream tasks (semantic segmentation); plan
   drafted in [clean-map-plan.md](clean-map-plan.md)

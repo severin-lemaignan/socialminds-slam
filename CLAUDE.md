@@ -14,7 +14,9 @@ Top priority is **loop closure / global consistency**. Full requirements in
 ## The robot (drives everything)
 - Omnidirectional base ~50×70 cm, ≤ 2 m/s, indoor.
 - **2× 2D laser scanners** (opposite corners) — **planar, NOT 3D lidar**.
-- **2× RGB-D cameras** (front + rear). **IMU** up to ~1 kHz.
+- **2× RGB-D cameras** (front + rear), mounted **near floor level** → clean person
+  recognition/masking cannot be assumed; no strategy may critically rely on robust
+  dynamics masking (ADR 0014). **IMU** up to ~1 kHz.
 - On-board: 24+ core CPU, **RTX 5060 8 GB shared** GPU.
 - Environment: feature-rich but **repetitive corridors** (perceptual aliasing) and
   **dynamic** (people, doors, chairs; people occlude cameras).
@@ -53,6 +55,13 @@ Top priority is **loop closure / global consistency**. Full requirements in
    pipeline must match the planar front-end — accuracy *and* compute — on the archived
    baseline (`eval/reference/baselines/m3-planar-frontend/`); benchmark every migration
    stage against it and justify any regression explicitly. — ADR 0010
+
+8. **Map decay = contradiction-driven free-space carving** (ADR 0014): a beam passing
+   through a voxel proves it empty — multiplicative weight decay, eviction below
+   weight 1. Carves the 5 cm map-product field only (registration fields keep long
+   memory — measured load-bearing); **no time-based decay**; frozen submaps stay
+   immutable (filter-at-freeze instead); **masking is an enhancer, never a
+   foundation** (floor-level cameras). — ADR 0014
 
 ## Approach
 **Write the novel core ourselves** (orchestration, fusion, front-ends, map); **reuse the
@@ -143,7 +152,10 @@ stays gated behind dynamics masking when scans are present (people dominate — 
 anchor-relative submaps + **GTSAM pose graph wired** (stage 3b; optimise on every
 verified loop, anchors re-posed, voxels never rewritten). Rerun viz shows the coloured
 3D map (CIELAB a*b*, illumination-invariant), true-size voxel cubes, per-submap TSDF
-entities. **Next (top blockers): dynamics masking (people), per-submap appearance
-signatures (corridor aliasing + re-localization), OpenVDB backend.**
+entities. Map ghosts from unmasked people are evicted by **free-space carving**
+(ADR 0014; 98.7 % stale-ghost eviction measured, CI-gated, maskless). **Next (top
+blockers): dynamics masking for the depth path (an enhancer, never load-bearing —
+ADR 0014), per-submap appearance signatures (corridor aliasing + re-localization),
+OpenVDB backend.**
 Open work lives in [`docs/ROADMAP.md`](docs/ROADMAP.md) (per-milestone checklists —
 the former TODO.md is folded in).
