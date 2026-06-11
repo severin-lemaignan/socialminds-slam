@@ -48,3 +48,15 @@ slam-map = { path = "crates/slam-map" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# Integration tests drive thousands of ICP/TSDF solves; unoptimised numeric code
+# is ~50x slower (tests/loop_closure.rs: minutes instead of seconds). Keep the
+# math-heavy crates optimised in dev/test builds; debug info stays on.
+[profile.dev.package."*"]
+opt-level = 2
+[profile.dev.package.slam-types]
+opt-level = 2
+[profile.dev.package.slam-map]
+opt-level = 2
+[profile.dev.package.slam-frontend-scan]
+opt-level = 2
