@@ -9,6 +9,10 @@ __pycache__/
 .venv/
 eval/.venv/
 
+# TensorRT engines are GPU- and TRT-version-specific — rebuild per target, never commit
+# (the portable .onnx exports in onnx/ ARE committed; see onnx/README.md).
+*.engine
+
 # Eval artifacts & datasets (large / reproducible — never committed)
 /data/
 /datasets/

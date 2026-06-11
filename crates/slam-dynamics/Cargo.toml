@@ -1,0 +1,18 @@
+[package]
+name = "slam-dynamics"
+description = "Dynamics masking: YOLO-seg ONNX inference producing per-pixel rejection masks (ADR 0015)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+slam-types = { workspace = true }
+thiserror = { workspace = true }
+# ONNX Runtime bindings (CPU EP by default — ADR 0003; the prebuilt runtime library
+# is downloaded once at build time and cached). `half` because the exported
+# yolo11s-seg weights and I/O tensors are fp16.
+ort = { version = "2.0.0-rc.12", features = ["half"] }
+half = "2"

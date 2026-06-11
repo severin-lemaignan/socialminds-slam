@@ -10,6 +10,7 @@ members = [
     "crates/slam-frontend-scan",
     "crates/slam-rig",
     "crates/slam-map",
+    "crates/slam-dynamics",
 ]
 
 [workspace.package]
@@ -44,6 +45,7 @@ slam-frontend-scan = { path = "crates/slam-frontend-scan" }
 slam-datasets = { path = "crates/slam-datasets" }
 slam-rig = { path = "crates/slam-rig" }
 slam-map = { path = "crates/slam-map" }
+slam-dynamics = { path = "crates/slam-dynamics" }
 
 [profile.release]
 lto = "thin"
