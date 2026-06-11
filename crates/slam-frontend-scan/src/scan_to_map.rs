@@ -113,6 +113,10 @@ impl Default for ScanToMapConfig {
                 // this — the ghosts are only harmful once current people overlap
                 // earlier stamps.
                 carve_factor: 0.5,
+                // No proportional margin: the registration field needs the
+                // aggressive eviction (busy-gate ATE 0.31 vs 1.03 with it), and
+                // its erosion is invisible — the lidar plane re-stamps it live.
+                carve_relative_margin: 0.0,
             },
             // 5 cm / 15 cm: the swept trade-off (see commit). Finer fields score
             // better open-loop near-range (2.5 cm: 0.46 vs 0.81 on cafe depth-only)
@@ -125,6 +129,11 @@ impl Default for ScanToMapConfig {
                 // The map product carves (ADR 0014): measured free on cafe1 with the
                 // block-skip walk (p99 within noise of carve-off, ATE unchanged).
                 carve_factor: 0.5,
+                // Proportional margin: keeps floors/oblique surfaces that grazing
+                // beams overshoot by a few % of range, while transients (overshot
+                // by metres) still carve — cafe1-1+depth final surface 345k -> 440k
+                // voxels with ghost eviction intact.
+                carve_relative_margin: 0.1,
             },
             max_iterations: 12,
             translation_epsilon: 1e-6,

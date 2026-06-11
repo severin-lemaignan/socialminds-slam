@@ -34,6 +34,15 @@ pub struct TsdfConfig {
     /// eviction — a beam passing through a voxel proves it empty); below weight 1
     /// the voxel reverts to unobserved. `1.0` disables carving.
     pub carve_factor: f32,
+    /// Proportional carve margin: a voxel only counts as contradicted when the
+    /// beam overshoots it by more than this fraction of its range (floored at
+    /// 2·truncation). Grazing beams of the *same oblique surface* overshoot by a
+    /// few % of range — without the margin, floors and oblique walls erode between
+    /// revisits (measured: 55 % of cafe1-1+depth surface voxels) — while a
+    /// transient's voxels are overshot by metres and still carve. `0.0` keeps the
+    /// aggressive eviction the *registration* fields measurably need in crowds
+    /// (busy-gate ATE 0.31 vs 1.03 with the margin).
+    pub carve_relative_margin: f64,
 }
 
 impl Default for TsdfConfig {
@@ -43,6 +52,7 @@ impl Default for TsdfConfig {
             truncation: 0.15,
             max_weight: 64.0,
             carve_factor: 0.5,
+            carve_relative_margin: 0.1,
         }
     }
 }

@@ -122,17 +122,29 @@ impl SparseTsdf {
     }
 
     /// Free-space carving (ADR 0014): the ray from `origin` along `dir` observed
-    /// nothing for `free_len` metres, so every allocated voxel it crosses is
-    /// contradicted — decay its weight multiplicatively; below 1 it reverts to
+    /// nothing before its hit at `hit_dist`, so allocated voxels it crosses are
+    /// contradicted — decay their weight multiplicatively; below 1 they revert to
     /// unobserved. Never allocates, and under a narrow band almost all free space is
     /// *unallocated blocks*: probe at half-block strides and descend to voxel
     /// resolution only across allocated spans, so an empty corridor costs a handful
     /// of hash probes per ray, not hundreds of voxel steps.
-    fn carve_ray(&mut self, origin: Vec3, dir: Vec3, free_len: f64) {
+    ///
+    /// Contradiction requires a **proportional overshoot**: a transient's voxels
+    /// are overshot by metres (the beam flies on to the real background), while a
+    /// grazing beam of the *same oblique surface* lands only beam-spacing·tanθ
+    /// beyond its neighbour's band — a few % of range. Without this margin the
+    /// floor and every obliquely-viewed wall erode between revisits (measured on
+    /// cafe1-1+depth: 55 % of final surface voxels carved, ≫ the people share).
+    fn carve_ray(&mut self, origin: Vec3, dir: Vec3, hit_dist: f64, free_len: f64) {
         let voxel = self.cfg.voxel_size;
         if free_len < voxel {
             return;
         }
+        let margin = self.cfg.carve_relative_margin;
+        // margin 0.0: the original aggressive eviction — the free-segment cap
+        // (one truncation + one voxel before the hit) is the only guard.
+        let carvable =
+            |s: f64| margin == 0.0 || hit_dist - s > (margin * s).max(2.0 * self.cfg.truncation);
         let stride = voxel * BLOCK_SIDE as f64 * 0.5;
         // Phase 1: find allocated spans (merged, so descent never revisits a voxel).
         let mut spans: Vec<(f64, f64)> = Vec::new();
@@ -164,7 +176,11 @@ impl SparseTsdf {
         for (a, b) in spans {
             let n = ((b - a) / voxel) as usize;
             for k in 0..=n {
-                let q = origin + dir * (a + k as f64 * voxel).min(b);
+                let s_here = (a + k as f64 * voxel).min(b);
+                if !carvable(s_here) {
+                    continue;
+                }
+                let q = origin + dir * s_here;
                 let idx = self.voxel_of(q);
                 if last_voxel == Some(idx) {
                     continue;
@@ -297,7 +313,7 @@ impl TsdfMap for SparseTsdf {
             if carve {
                 // The segment before the band is observed empty; a one-voxel margin
                 // keeps the carve from nibbling the band this ray is reinforcing.
-                self.carve_ray(origin, dir, start - self.cfg.voxel_size);
+                self.carve_ray(origin, dir, dist, start - self.cfg.voxel_size);
             }
             let n = ((end - start) / step) as usize + 1;
             let mut last = None;

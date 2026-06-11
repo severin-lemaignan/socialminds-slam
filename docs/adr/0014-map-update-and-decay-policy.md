@@ -104,6 +104,18 @@ One policy currently serves three memories with different jobs:
   rays can transiently carve true-wall band voxels; continuous reinforcement
   out-heals the 0.5 decay in practice — guarded by the parity gate (clean accuracy
   must hold) and the dynamic-variant gates.
+  *Amendment (2026-06-11):* "reinforcement out-heals" holds for the lidar's
+  always-visible plane but **not** for the depth path's floors and oblique walls,
+  which the camera revisits only intermittently — measured on cafe1-1+depth,
+  carving removed 55 % of the final surface voxels, far beyond the people share
+  (visible as progressive map "decimation" in rerun). The 3D map-product field
+  therefore carves with a **proportional overshoot margin**
+  (`carve_relative_margin` 0.1: a voxel is contradicted only when the beam flies
+  ≥ 10 % of its range past it — transients overshoot by metres, grazing beams of
+  the same oblique surface by a few %), recovering 345 k → 438 k surface voxels
+  with ghost eviction intact. The registration fields keep margin 0: their
+  aggressive eviction is measurably load-bearing in crowds (busy-gate ATE 0.31
+  vs 1.03 with the margin), and their erosion is invisible to any consumer.
 - **Risks accepted:** carving trusts the pose — under gross drift it could erode true
   geometry along mis-projected rays; bounded by the keyframe integration diet and by
   carving only the active submap (frozen history is safe). Revisit if the loop-closure
