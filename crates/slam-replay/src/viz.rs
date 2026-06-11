@@ -262,33 +262,36 @@ mod real {
         /// A cheap intermediate snapshot of the same entities: anchors always
         /// refresh (graph re-posing moves whole submaps for free), a freshly
         /// frozen submap's voxels are emitted **once** (immutable thereafter),
-        /// and the active submap is re-emitted budget-strided — a recording stays
+        /// and the still-mutating tail — the active submap, plus the overlap
+        /// window's predecessor — is re-emitted budget-strided. A recording stays
         /// tens of MB instead of re-serialising every voxel every few seconds.
+        /// `frozen_count`: how many leading submaps are immutable (the engine's
+        /// creation-ordinal numbering keeps every entity's identity stable).
         pub fn log_tsdf_snapshot(
             &mut self,
             submaps: &[(f64, f64, f64, &dyn TsdfMap)],
+            frozen_count: usize,
             stamp_s: f64,
         ) {
             self.rec.set_duration_secs("sensor_time", stamp_s);
-            let active = submaps.len().saturating_sub(1);
             for (i, &(ax, ay, atheta, map)) in submaps.iter().enumerate() {
                 self.log_anchor(i, ax, ay, atheta);
-                if i < active && i < self.tsdf_frozen_logged {
-                    continue; // frozen and already on screen: only the anchor moves
+                if i < frozen_count {
+                    if i >= self.tsdf_frozen_logged {
+                        // Newly frozen: its one full, final emission.
+                        self.emit_tsdf_boxes(i, map, 1);
+                    }
+                    continue; // frozen and on screen: only the anchor moves
                 }
-                let stride = if i == active {
-                    let mut surface = 0usize;
-                    let voxel = map.config().voxel_size;
-                    map.visit_voxels(&mut |_, _, _, tsdf, _| {
-                        surface += usize::from((tsdf as f64).abs() <= voxel);
-                    });
-                    surface.div_ceil(SNAPSHOT_VOXEL_BUDGET).max(1)
-                } else {
-                    1 // a newly frozen submap gets its one full, final emission
-                };
+                let mut surface = 0usize;
+                let voxel = map.config().voxel_size;
+                map.visit_voxels(&mut |_, _, _, tsdf, _| {
+                    surface += usize::from((tsdf as f64).abs() <= voxel);
+                });
+                let stride = surface.div_ceil(SNAPSHOT_VOXEL_BUDGET).max(1);
                 self.emit_tsdf_boxes(i, map, stride);
             }
-            self.tsdf_frozen_logged = active;
+            self.tsdf_frozen_logged = frozen_count;
         }
 
         fn log_anchor(&self, i: usize, ax: f64, ay: f64, atheta: f64) {
@@ -401,6 +404,7 @@ mod stub {
         pub fn log_tsdf_snapshot(
             &mut self,
             _submaps: &[(f64, f64, f64, &dyn slam_map::TsdfMap)],
+            _frozen_count: usize,
             _stamp_s: f64,
         ) {
         }

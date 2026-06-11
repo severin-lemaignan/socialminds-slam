@@ -318,14 +318,29 @@ impl ScanToMapOdometry {
     /// Every 3D submap field with its (possibly graph-optimised) anchor: frozen
     /// submaps in order, then the active one. Each field's voxels are in the
     /// *anchor-local* frame — the full map is the union after applying each anchor.
+    /// All 3D fields in creation order: frozen, then the predecessor still in its
+    /// overlap window (it exists and is being fused into — hiding it made whole
+    /// submaps vanish from the viewer for the overlap's duration), then the active
+    /// field. A submap's position in this list is its creation ordinal and never
+    /// changes — viz entities keyed on it keep a stable identity across hand-overs.
     pub fn submaps_3d(&self) -> Vec<(Se2, &SparseTsdf)> {
         let mut out: Vec<(Se2, &SparseTsdf)> = self
             .frozen
             .iter()
             .map(|(anchor, _reg, map3d)| (*anchor, map3d))
             .collect();
+        if let Some(prev) = &self.prev_map {
+            out.push((self.prev_anchor, prev));
+        }
         out.push((self.submap_birth, &self.map));
         out
+    }
+
+    /// How many leading entries of [`submaps_3d`](Self::submaps_3d) are frozen —
+    /// immutable from here on (the tail still mutates: the active field, plus the
+    /// overlap-window predecessor when present).
+    pub fn frozen_submap_count(&self) -> usize {
+        self.frozen.len()
     }
 
     fn extrinsic(&self, frame: FrameId) -> Option<Pose> {

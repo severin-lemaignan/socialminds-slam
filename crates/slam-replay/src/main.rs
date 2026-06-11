@@ -967,9 +967,11 @@ fn main() -> Result<()> {
             wall += w;
             if let (Engine::ScanToMap(odo), Some(viz_cell)) = (&engine, &viz_sink) {
                 let stamp = events[end_idx - 1].stamp().as_seconds();
-                viz_cell
-                    .borrow_mut()
-                    .log_tsdf_snapshot(&submaps_for_viz(odo), stamp);
+                viz_cell.borrow_mut().log_tsdf_snapshot(
+                    &submaps_for_viz(odo),
+                    odo.frozen_submap_count(),
+                    stamp,
+                );
             }
             start_idx = end_idx;
         }
