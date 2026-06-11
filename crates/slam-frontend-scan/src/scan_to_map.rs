@@ -247,6 +247,10 @@ pub struct ScanToMapOdometry {
     stats: ScanOdometryStats,
     /// Reused buffers (hot path: no steady-state allocation).
     lifted: Vec<Vec3>,
+    /// Per-point sRGB parallel to `lifted` when the current sweep is a coloured
+    /// depth cloud (empty otherwise) — feeds the map's voxel colour channel at
+    /// integration, never the solve.
+    lifted_colors: Vec<[u8; 3]>,
     world: Vec<Vec3>,
     samples: Vec<Option<SdfSample>>,
 }
@@ -295,6 +299,7 @@ impl ScanToMapOdometry {
             last_stamp: None,
             stats: ScanOdometryStats::default(),
             lifted: Vec::new(),
+            lifted_colors: Vec::new(),
             world: Vec::new(),
             samples: Vec::new(),
         }
@@ -336,6 +341,7 @@ impl ScanToMapOdometry {
     /// floor is structure, not noise.
     fn lift_scan(&mut self, scan: &LaserScan2D, t_base_sensor: &Pose) {
         self.lifted.clear();
+        self.lifted_colors.clear();
         let tilt: Rotation = self.attitude.tilt();
         let tilted = self.attitude.is_initialized();
         for (i, &r) in scan.ranges.iter().enumerate() {
@@ -451,13 +457,16 @@ impl ScanToMapOdometry {
             self.world.clear();
             self.world
                 .extend(self.lifted.iter().map(|&p| Self::apply_planar(&local, p)));
-            match which {
-                0 => self.map.integrate_points(origin, &self.world),
-                _ => self
-                    .prev_map
-                    .as_mut()
-                    .expect("checked above")
-                    .integrate_points(origin, &self.world),
+            // Coloured clouds also feed the voxel colour channel (1:1 with the
+            // transformed points) — the SDF and the solve never see colour.
+            let field: &mut SparseTsdf = match which {
+                0 => &mut self.map,
+                _ => self.prev_map.as_mut().expect("checked above"),
+            };
+            if self.lifted_colors.len() == self.lifted.len() {
+                field.integrate_points_colored(origin, &self.world, &self.lifted_colors);
+            } else {
+                field.integrate_points(origin, &self.world);
             }
 
             let flat_origin = Vec3::new(origin.x, origin.y, 0.0);
@@ -641,6 +650,7 @@ impl ScanToMapOdometry {
     /// Cloud points → tilt-compensated base frame (the cloud analogue of `lift_scan`).
     fn lift_cloud(&mut self, cloud: &slam_types::PointCloud, t_base_sensor: &Pose) {
         self.lifted.clear();
+        self.lifted_colors.clear();
         let tilt: Rotation = self.attitude.tilt();
         let tilted = self.attitude.is_initialized();
         self.lifted.extend(cloud.points.iter().map(|&p| {
@@ -651,6 +661,9 @@ impl ScanToMapOdometry {
                 p_base
             }
         }));
+        if cloud.colors.len() == cloud.points.len() {
+            self.lifted_colors.extend_from_slice(&cloud.colors);
+        }
     }
 
     /// 3-DoF Gauss-Newton against the **3D** field (full trilinear): the depth path.

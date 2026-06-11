@@ -68,6 +68,16 @@ pub trait TsdfMap {
     /// the projective signed distance.
     fn integrate_points(&mut self, origin: Vec3, points: &[Vec3]);
 
+    /// Like [`integrate_points`](Self::integrate_points), but each point carries an
+    /// sRGB colour (`colors[i]` ↔ `points[i]`) that is running-averaged into the
+    /// voxels at the surface hit — a visualization/semantic channel that **never**
+    /// affects the SDF or registration. Mismatched lengths fall back to the
+    /// colourless path. The default impl ignores colour; backends with colour
+    /// storage (the sparse grid) override it.
+    fn integrate_points_colored(&mut self, origin: Vec3, points: &[Vec3], _colors: &[[u8; 3]]) {
+        self.integrate_points(origin, points);
+    }
+
     /// Sample SDF + gradient at each point; `None` where the field is unobserved.
     /// `out` is cleared and refilled (reusable allocation — hot path).
     fn sample_batch(&self, points: &[Vec3], out: &mut Vec<Option<SdfSample>>);
@@ -82,4 +92,15 @@ pub trait TsdfMap {
     /// indices; centre of voxel i at `(i + 0.5) · voxel_size`). Export/viz path —
     /// not for the registration hot loop.
     fn visit_voxels(&self, visit: &mut dyn FnMut(i32, i32, i32, f32, f32));
+
+    /// Colour-aware [`visit_voxels`](Self::visit_voxels): the trailing argument is the
+    /// voxel's running-averaged sRGB surface colour, or `None` for voxels never
+    /// touched by a coloured integration (scan-only geometry). The default impl
+    /// reports every voxel as colourless; the sparse grid overrides it.
+    fn visit_voxels_colored(
+        &self,
+        visit: &mut dyn FnMut(i32, i32, i32, f32, f32, Option<[u8; 3]>),
+    ) {
+        self.visit_voxels(&mut |ix, iy, iz, tsdf, w| visit(ix, iy, iz, tsdf, w, None));
+    }
 }

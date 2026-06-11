@@ -934,7 +934,7 @@ fn main() -> Result<()> {
     // With viz on, run in sensor-time segments and re-log the live TSDF after each:
     // the timeline then shows the *current* field state (ghosts appearing and being
     // carved away — ADR 0014), which the append-only scan chunks cannot.
-    const TSDF_SNAPSHOT_PERIOD_S: f64 = 2.0;
+    const TSDF_SNAPSHOT_PERIOD_S: f64 = 5.0;
     let (traj, latencies, wall) = if viz_sink.is_some() && matches!(engine, Engine::ScanToMap(_)) {
         let mut traj = Trajectory::new();
         let mut latencies = Vec::with_capacity(events.len());
@@ -962,8 +962,8 @@ fn main() -> Result<()> {
             if let (Engine::ScanToMap(odo), Some(viz_cell)) = (&engine, &viz_sink) {
                 let stamp = events[end_idx - 1].stamp().as_seconds();
                 viz_cell
-                    .borrow()
-                    .log_tsdf(&submaps_for_viz(odo), stamp, false);
+                    .borrow_mut()
+                    .log_tsdf_snapshot(&submaps_for_viz(odo), stamp);
             }
             start_idx = end_idx;
         }
@@ -988,7 +988,9 @@ fn main() -> Result<()> {
         }
         if let Some(viz_cell) = &viz_sink {
             let end = events.last().map_or(0.0, |e| e.stamp().as_seconds());
-            viz_cell.borrow().log_tsdf(&submaps_for_viz(odo), end, true);
+            viz_cell
+                .borrow_mut()
+                .log_tsdf(&submaps_for_viz(odo), end, true);
         }
     } else if args.map_out.is_some() {
         bail!("--map-out needs --baseline scan-matching-3d (the TSDF front-end)");

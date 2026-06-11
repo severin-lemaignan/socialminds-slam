@@ -106,12 +106,14 @@ Two complementary tools ([ADR 0011](docs/adr/0011-visualization-stack.md)):
 
 **Live / progressive 3D — [rerun](https://rerun.io).** The engine logs directly into
 the rerun viewer: the current scan sweep and depth cloud, the growing estimated
-trajectory, ground truth, the map accumulating chunk by chunk (solid cubes at the
-sampling pitch — **coloured** when the depth stream names its colour topic: points
-carry per-pixel RGB, displayed as the illumination-invariant CIELAB a\*b\* chroma),
-and the final TSDF surface as true-size voxel cubes, one entity per submap posed by
-its anchor — all on a scrubbable `sensor_time` timeline. The rerun SDK is a heavy
-dependency, so it is **feature-gated** — build once with `--features viz`:
+trajectory, ground truth, and the TSDF map itself as true-size voxel cubes — one
+entity per submap posed by its anchor, refreshed every few seconds so you watch the
+*current* field state (ghosts appearing and being carved away, anchors re-posed by
+the graph). When the depth stream names its colour topic (`--color-topic` / config
+`color:`), voxels carry a running-averaged RGB channel and render as the
+illumination-invariant CIELAB a\*b\* chroma — the coloured 3D map. All on a
+scrubbable `sensor_time` timeline. The rerun SDK is a heavy dependency, so it is
+**feature-gated** — build once with `--features viz`:
 
 ### Visualization of synthetic data
 

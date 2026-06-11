@@ -43,6 +43,41 @@ fn split(ix: i32, iy: i32, iz: i32) -> (BlockKey, usize) {
 pub struct SparseTsdf {
     cfg: TsdfConfig,
     blocks: HashMap<BlockKey, Block>,
+    /// The voxel colour channel: running-averaged sRGB at surface-hit voxels, fed
+    /// only by coloured integrations (data-gated — a colour-less run stores
+    /// nothing) and never consumed by registration. Kept beside the voxel grid
+    /// rather than inside [`Voxel`] so the hot path's memory layout is untouched;
+    /// carving evicts entries together with their voxel.
+    colors: HashMap<(i32, i32, i32), ColorAcc>,
+}
+
+/// Running average with a capped count: early observations average exactly; at
+/// the cap it keeps adapting (≈ exponentially) instead of freezing, so lighting
+/// changes and re-painted surfaces work their way in.
+#[derive(Clone, Copy)]
+struct ColorAcc {
+    rgb: [f32; 3],
+    n: u8,
+}
+
+const COLOR_COUNT_CAP: u8 = 32;
+
+impl ColorAcc {
+    fn fold(&mut self, c: [u8; 3]) {
+        let n = self.n as f32;
+        for (acc, &obs) in self.rgb.iter_mut().zip(c.iter()) {
+            *acc += (obs as f32 - *acc) / (n + 1.0);
+        }
+        self.n = self.n.saturating_add(1).min(COLOR_COUNT_CAP);
+    }
+
+    fn srgb(&self) -> [u8; 3] {
+        [
+            (self.rgb[0] + 0.5) as u8,
+            (self.rgb[1] + 0.5) as u8,
+            (self.rgb[2] + 0.5) as u8,
+        ]
+    }
 }
 
 impl SparseTsdf {
@@ -50,6 +85,7 @@ impl SparseTsdf {
         SparseTsdf {
             cfg,
             blocks: HashMap::new(),
+            colors: HashMap::new(),
         }
     }
 
@@ -151,6 +187,7 @@ impl SparseTsdf {
                     v.weight *= self.cfg.carve_factor;
                     if v.weight < 1.0 {
                         *v = EMPTY;
+                        self.colors.remove(&idx);
                     }
                 }
             }
@@ -305,6 +342,42 @@ impl TsdfMap for SparseTsdf {
                     v.tsdf,
                     v.weight,
                 );
+            }
+        }
+    }
+
+    fn integrate_points_colored(&mut self, origin: Vec3, points: &[Vec3], colors: &[[u8; 3]]) {
+        self.integrate_points(origin, points);
+        if colors.len() != points.len() {
+            return;
+        }
+        for (&p, &c) in points.iter().zip(colors.iter()) {
+            let idx = self.voxel_of(p);
+            self.colors
+                .entry(idx)
+                .or_insert(ColorAcc {
+                    rgb: [0.0; 3],
+                    n: 0,
+                })
+                .fold(c);
+        }
+    }
+
+    fn visit_voxels_colored(
+        &self,
+        visit: &mut dyn FnMut(i32, i32, i32, f32, f32, Option<[u8; 3]>),
+    ) {
+        for (key, block) in &self.blocks {
+            for (off, v) in block.iter().enumerate() {
+                if v.weight <= 0.0 {
+                    continue;
+                }
+                let off = off as i32;
+                let ix = (key.0 << BLOCK_BITS) | (off >> (2 * BLOCK_BITS));
+                let iy = (key.1 << BLOCK_BITS) | ((off >> BLOCK_BITS) & BLOCK_MASK);
+                let iz = (key.2 << BLOCK_BITS) | (off & BLOCK_MASK);
+                let color = self.colors.get(&(ix, iy, iz)).map(ColorAcc::srgb);
+                visit(ix, iy, iz, v.tsdf, v.weight, color);
             }
         }
     }
@@ -482,6 +555,79 @@ mod tests {
             off.integrate_points(origin, &points);
         }
         assert_eq!(on.allocated_voxels(), off.allocated_voxels());
+    }
+
+    fn wall_points() -> Vec<Vec3> {
+        (-40..=40)
+            .flat_map(|y| (0..=16).map(move |z| Vec3::new(2.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect()
+    }
+
+    #[test]
+    fn voxel_color_accumulates_at_surface_hits() {
+        let mut map = SparseTsdf::new(TsdfConfig::default());
+        let points = wall_points();
+        let reds = vec![[220u8, 30, 30]; points.len()];
+        let origin = Vec3::new(0.0, 0.0, 0.2);
+        map.integrate_points_colored(origin, &points, &reds);
+        map.integrate_points_colored(origin, &points, &reds);
+        let mut colored = 0;
+        let mut sample: Option<[u8; 3]> = None;
+        map.visit_voxels_colored(&mut |_, _, _, _, _, c| {
+            if let Some(c) = c {
+                colored += 1;
+                sample = Some(c);
+            }
+        });
+        assert!(colored > 0, "surface voxels must carry colour");
+        let c = sample.unwrap();
+        assert!(
+            c[0] > 200 && c[1] < 60 && c[2] < 60,
+            "running average drifted: {c:?}"
+        );
+    }
+
+    #[test]
+    fn colourless_integration_stores_no_colour() {
+        let map = wall_map();
+        map.visit_voxels_colored(&mut |_, _, _, _, _, c| {
+            assert!(c.is_none(), "colour appeared from a colour-less run");
+        });
+    }
+
+    /// Carving evicts the colour with the voxel — a departed person's colour must
+    /// not survive as an orphan to repaint future geometry.
+    #[test]
+    fn carving_evicts_colour_with_the_voxel() {
+        let mut map = SparseTsdf::new(TsdfConfig::default());
+        let person: Vec<Vec3> = (-8..=8)
+            .flat_map(|y| (4..=12).map(move |z| Vec3::new(1.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect();
+        let blues = vec![[40u8, 40, 220]; person.len()];
+        let origin = Vec3::new(0.0, 0.0, 0.2);
+        for _ in 0..6 {
+            map.integrate_points_colored(origin, &person, &blues);
+        }
+        let wall = wall_points();
+        for _ in 0..6 {
+            map.integrate_points(origin, &wall);
+        }
+        // The person is carved out (see ghost_is_evicted...); its colour entries
+        // within the evicted region must be gone too.
+        let s = 1.0 / map.cfg.voxel_size;
+        for p in &person {
+            let idx = (
+                (p.x * s).floor() as i32,
+                (p.y * s).floor() as i32,
+                (p.z * s).floor() as i32,
+            );
+            if map.voxel(idx.0, idx.1, idx.2).weight <= 0.0 {
+                assert!(
+                    !map.colors.contains_key(&idx),
+                    "orphan colour at evicted voxel {idx:?}"
+                );
+            }
+        }
     }
 
     #[test]

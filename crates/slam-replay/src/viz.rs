@@ -95,11 +95,14 @@ mod real {
         chunk: Vec<[f32; 3]>,
         scans_seen: usize,
         chunks_logged: usize,
-        cloud_chunk: Vec<[f32; 3]>,
-        cloud_chunk_colors: Vec<rerun::Color>,
-        clouds_seen: usize,
-        cloud_chunks_logged: usize,
+        /// Frozen submaps whose voxels are already in the recording (immutable —
+        /// snapshots refresh only their anchors; see `log_tsdf_snapshot`).
+        tsdf_frozen_logged: usize,
     }
+
+    /// Box budget for an *intermediate* snapshot of the active submap; the final
+    /// `log_tsdf` is always exact.
+    const SNAPSHOT_VOXEL_BUDGET: usize = 60_000;
 
     impl Viz {
         /// `mode`: `spawn` (live viewer), `connect[:ADDR]` (running viewer), or
@@ -118,10 +121,7 @@ mod real {
                 chunk: Vec::new(),
                 scans_seen: 0,
                 chunks_logged: 0,
-                cloud_chunk: Vec::new(),
-                cloud_chunk_colors: Vec::new(),
-                clouds_seen: 0,
-                cloud_chunks_logged: 0,
+                tsdf_frozen_logged: 0,
             })
         }
 
@@ -180,10 +180,9 @@ mod real {
             }
         }
 
-        /// One depth cloud: the live frame plus an accumulating 3D map layer
-        /// (chunked like the scan layer, under `world/map3d/`). When the cloud
-        /// carries RGB (`--color-topic` / config `color:`), points are painted with
-        /// their illumination-normalized chroma; otherwise the fixed layer colours.
+        /// One depth cloud: the live frame only. The accumulated 3D map is shown by
+        /// the periodic `world/tsdf` snapshots instead — they carry the voxel colour
+        /// channel and, unlike append-only chunks, reflect carving and re-posing.
         pub fn log_cloud(
             &mut self,
             stamp_s: f64,
@@ -201,103 +200,141 @@ mod real {
             let _ = self.rec.log(
                 "world/depth",
                 &rerun::Points3D::new(world.iter().copied())
-                    .with_colors(point_colors.iter().copied())
+                    .with_colors(point_colors)
                     .with_radii([0.01]),
             );
-            if colored {
-                self.cloud_chunk_colors.extend(point_colors);
-            } else {
-                self.cloud_chunk_colors.extend(std::iter::repeat_n(
-                    rerun::Color::from_rgb(120, 140, 120),
-                    world.len(),
-                ));
-            }
-            self.cloud_chunk.extend(world);
-            self.clouds_seen += 1;
-            if self.clouds_seen.is_multiple_of(CHUNK_SCANS) {
-                // Solid cubes at the depth sampling pitch (range-adaptive
-                // `target_spacing`, 5 cm default), so the accumulated 3D map reads
-                // as surface, consistent with the `world/tsdf` voxel rendering.
-                let half = 0.025f32;
-                let _ = self.rec.log(
-                    format!("world/map3d/chunk_{:05}", self.cloud_chunks_logged),
-                    &rerun::Boxes3D::from_centers_and_half_sizes(
-                        self.cloud_chunk.drain(..),
-                        std::iter::repeat_n([half, half, half], 1),
-                    )
-                    .with_colors(self.cloud_chunk_colors.drain(..))
-                    .with_fill_mode(rerun::FillMode::Solid),
-                );
-                self.cloud_chunks_logged += 1;
-            }
         }
 
-        /// The final TSDF surface (|sdf| below one voxel), coloured by height.
+        /// The TSDF surface (|sdf| below one voxel): voxels carrying the colour
+        /// channel render their illumination-normalized chroma (the RGB-projected
+        /// map); colour-less voxels (scan-only geometry) keep the height ramp.
         ///
         /// Submaps are **anchor-local** (stage 3b): each goes under its own entity
         /// with its anchor as the entity transform, so the viewer places it in the
         /// world — and a re-optimised anchor would re-pose voxels without rewrites,
         /// exactly like the engine itself.
         pub fn log_tsdf(
-            &self,
+            &mut self,
             submaps: &[(f64, f64, f64, &dyn TsdfMap)],
             stamp_s: f64,
             announce: bool,
         ) {
             self.rec.set_duration_secs("sensor_time", stamp_s);
             let mut total = 0usize;
+            let mut colored_total = 0usize;
             for (i, &(ax, ay, atheta, map)) in submaps.iter().enumerate() {
-                let voxel = map.config().voxel_size;
-                let mut pts: Vec<[f32; 3]> = Vec::new();
-                let mut colors: Vec<rerun::Color> = Vec::new();
-                map.visit_voxels(&mut |ix, iy, iz, tsdf, _w| {
-                    if (tsdf as f64).abs() > voxel {
-                        return;
-                    }
-                    let z = (iz as f64 + 0.5) * voxel;
-                    pts.push([
-                        ((ix as f64 + 0.5) * voxel) as f32,
-                        ((iy as f64 + 0.5) * voxel) as f32,
-                        z as f32,
-                    ]);
-                    // Height ramp 0..2 m: blue floor → yellow head-height.
-                    let t = (z / 2.0).clamp(0.0, 1.0) as f32;
-                    colors.push(rerun::Color::from_rgb(
-                        (40.0 + 200.0 * t) as u8,
-                        (90.0 + 130.0 * t) as u8,
-                        (220.0 * (1.0 - t) + 40.0) as u8,
-                    ));
-                });
-                total += pts.len();
-                let entity = format!("world/tsdf/submap_{i:03}");
-                let _ = self.rec.log(
-                    entity.clone(),
-                    &rerun::Transform3D::from_translation([ax as f32, ay as f32, 0.0])
-                        .with_rotation(rerun::RotationAxisAngle::new(
-                            [0.0, 0.0, 1.0],
-                            rerun::Angle::from_radians(atheta as f32),
-                        )),
-                );
-                // True-size solid cubes: what the map *is*, not a point-sprite
-                // impression.
-                let half = (voxel / 2.0) as f32;
-                let _ = self.rec.log(
-                    entity,
-                    &rerun::Boxes3D::from_centers_and_half_sizes(
-                        pts,
-                        std::iter::repeat_n([half, half, half], 1),
-                    )
-                    .with_colors(colors)
-                    .with_fill_mode(rerun::FillMode::Solid),
-                );
+                self.log_anchor(i, ax, ay, atheta);
+                let (n, colored) = self.emit_tsdf_boxes(i, map, 1);
+                total += n;
+                colored_total += colored;
             }
+            self.tsdf_frozen_logged = submaps.len().saturating_sub(1);
             if announce {
                 eprintln!(
-                    "slam-replay: rerun: TSDF surface {} voxels across {} submaps",
+                    "slam-replay: rerun: TSDF surface {} voxels ({} coloured) across {} submaps",
                     total,
+                    colored_total,
                     submaps.len()
                 );
             }
+        }
+
+        /// A cheap intermediate snapshot of the same entities: anchors always
+        /// refresh (graph re-posing moves whole submaps for free), a freshly
+        /// frozen submap's voxels are emitted **once** (immutable thereafter),
+        /// and the active submap is re-emitted budget-strided — a recording stays
+        /// tens of MB instead of re-serialising every voxel every few seconds.
+        pub fn log_tsdf_snapshot(
+            &mut self,
+            submaps: &[(f64, f64, f64, &dyn TsdfMap)],
+            stamp_s: f64,
+        ) {
+            self.rec.set_duration_secs("sensor_time", stamp_s);
+            let active = submaps.len().saturating_sub(1);
+            for (i, &(ax, ay, atheta, map)) in submaps.iter().enumerate() {
+                self.log_anchor(i, ax, ay, atheta);
+                if i < active && i < self.tsdf_frozen_logged {
+                    continue; // frozen and already on screen: only the anchor moves
+                }
+                let stride = if i == active {
+                    let mut surface = 0usize;
+                    let voxel = map.config().voxel_size;
+                    map.visit_voxels(&mut |_, _, _, tsdf, _| {
+                        surface += usize::from((tsdf as f64).abs() <= voxel);
+                    });
+                    surface.div_ceil(SNAPSHOT_VOXEL_BUDGET).max(1)
+                } else {
+                    1 // a newly frozen submap gets its one full, final emission
+                };
+                self.emit_tsdf_boxes(i, map, stride);
+            }
+            self.tsdf_frozen_logged = active;
+        }
+
+        fn log_anchor(&self, i: usize, ax: f64, ay: f64, atheta: f64) {
+            let _ = self.rec.log(
+                format!("world/tsdf/submap_{i:03}"),
+                &rerun::Transform3D::from_translation([ax as f32, ay as f32, 0.0]).with_rotation(
+                    rerun::RotationAxisAngle::new(
+                        [0.0, 0.0, 1.0],
+                        rerun::Angle::from_radians(atheta as f32),
+                    ),
+                ),
+            );
+        }
+
+        /// Emit every `stride`-th surface voxel of `map` as true-size solid cubes —
+        /// what the map *is*, not a point-sprite impression. Voxels carrying the
+        /// colour channel render their illumination-normalized chroma; colour-less
+        /// ones (scan-only geometry) keep the height ramp.
+        fn emit_tsdf_boxes(&self, i: usize, map: &dyn TsdfMap, stride: usize) -> (usize, usize) {
+            let voxel = map.config().voxel_size;
+            let mut pts: Vec<[f32; 3]> = Vec::new();
+            let mut colors: Vec<rerun::Color> = Vec::new();
+            let mut colored_total = 0usize;
+            let mut nth = 0usize;
+            map.visit_voxels_colored(&mut |ix, iy, iz, tsdf, _w, rgb| {
+                if (tsdf as f64).abs() > voxel {
+                    return;
+                }
+                nth += 1;
+                if !nth.is_multiple_of(stride) {
+                    return;
+                }
+                let z = (iz as f64 + 0.5) * voxel;
+                pts.push([
+                    ((ix as f64 + 0.5) * voxel) as f32,
+                    ((iy as f64 + 0.5) * voxel) as f32,
+                    z as f32,
+                ]);
+                colors.push(match rgb {
+                    Some(c) => {
+                        colored_total += 1;
+                        chroma(c)
+                    }
+                    // Height ramp 0..2 m: blue floor → yellow head-height.
+                    None => {
+                        let t = (z / 2.0).clamp(0.0, 1.0) as f32;
+                        rerun::Color::from_rgb(
+                            (40.0 + 200.0 * t) as u8,
+                            (90.0 + 130.0 * t) as u8,
+                            (220.0 * (1.0 - t) + 40.0) as u8,
+                        )
+                    }
+                });
+            });
+            let n = pts.len();
+            let half = (voxel / 2.0) as f32;
+            let _ = self.rec.log(
+                format!("world/tsdf/submap_{i:03}"),
+                &rerun::Boxes3D::from_centers_and_half_sizes(
+                    pts,
+                    std::iter::repeat_n([half, half, half], 1),
+                )
+                .with_colors(colors)
+                .with_fill_mode(rerun::FillMode::Solid),
+            );
+            (n, colored_total)
         }
     }
 }
@@ -334,10 +371,17 @@ mod stub {
         }
 
         pub fn log_tsdf(
-            &self,
+            &mut self,
             _submaps: &[(f64, f64, f64, &dyn slam_map::TsdfMap)],
             _stamp_s: f64,
             _announce: bool,
+        ) {
+        }
+
+        pub fn log_tsdf_snapshot(
+            &mut self,
+            _submaps: &[(f64, f64, f64, &dyn slam_map::TsdfMap)],
+            _stamp_s: f64,
         ) {
         }
     }

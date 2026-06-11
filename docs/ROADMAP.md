@@ -192,12 +192,16 @@ positives on the corridor stress sequences.
 - ☐ Clean-3D-map: depth outlier filtering, post-hoc model filtering, compaction →
   a *compact* map suitable for downstream tasks (semantic segmentation); plan
   drafted in [clean-map-plan.md](clean-map-plan.md)
-- ☐ Voxel colour channel: coloured clouds + rerun a\*b\* display landed; remaining is
-  per-voxel chroma accumulation — quantized CIELAB (a\*, b\*), 2 B/voxel, surface
-  voxels only, config-gated so depth-only memory stays at 8 B/voxel (a\*b\* is
-  perceptually uniform, so weighted averaging is well-behaved). Then colour
-  `world/tsdf` cubes from the voxel channel instead of height. Implement together
-  with dynamics masking (same colour-image decode path); useful for reMap.
+- ☑ Voxel colour channel (2026-06-11): per-voxel running-averaged sRGB at surface
+  hits (side map keyed by voxel, data-gated — colour-less runs store nothing;
+  carving evicts colour with the voxel; never consumed by registration). The
+  `world/tsdf` cubes now render the channel as illumination-normalized a\*b\*
+  chroma — measured on cafe1-1: 257 k of 360 k surface voxels coloured. The heavy
+  `world/map3d` chunk layer is **removed**; snapshots re-emit only the active
+  submap (budget-strided) + anchor transforms, frozen voxels log once (rrd
+  110 → 73 MB on cafe1-1 with depth). Deviation from plan: storage is ~16 B/surface
+  voxel (side hash map) rather than the 2 B quantized a\*b\* in-voxel layout —
+  revisit alongside the half-float voxel work if memory tightens. Useful for reMap.
 - ☐ Half-float TSDF voxels (halves map memory; ADR 0010 budget headroom)
 - ☐ Map-quality eval vs. ground-truth meshes; dynamic-vs-static ATE deltas
 
