@@ -10,8 +10,10 @@ A from-scratch, real-time, fully-3D SLAM engine for an indoor mobile robot.
 > verified loop closure feeding a GTSAM pose graph over anchor-relative submaps —
 > benchmarked against the OpenLORIS-Scene dataset and the published state of the art
 > (see the [roadmap](docs/ROADMAP.md)). Dynamics masking (YOLO-seg point rejection
-> at depth ingest, ADR 0015) is wired in behind `--features dynamics`. Next:
-> measuring its A/B on real data, and appearance-based loop signatures (corridors).
+> at depth ingest, ADR 0015) is wired in behind `--features dynamics` and A/B-measured
+> on real data (see [REPORT_MASKING_AB](docs/REPORT_MASKING_AB.md)): map-side enhancer, no pose-side win yet —
+> the gated depth→pose bridge stays gated. Next: appearance-based loop signatures
+> (corridors, and the false-depth-loop blocker the A/B exposed).
 
 ## What this is
 

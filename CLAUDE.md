@@ -165,10 +165,16 @@ verified loop, anchors re-posed, voxels never rewritten). Rerun viz shows the co
 entities. Map ghosts from unmasked people are evicted by **free-space carving**
 (ADR 0014; 98.7 % stale-ghost eviction measured, CI-gated, maskless). **Dynamics
 masking integrated** (ADR 0015, 2026-06-11): `slam-dynamics` + ingest-side
-`PixelMask` rejection + `--features dynamics` replay wiring + CI smoke test;
-remaining: A/B-measure it on cached real data, then unlock the gated depth bridges
-(`depth_updates_pose`, `reg_band_tolerance`). **Next (top blockers): measure
-masking A/B on the depth path, per-submap appearance signatures (corridor
-aliasing + re-localization), OpenVDB backend.**
+`PixelMask` rejection + `--features dynamics` replay wiring + CI smoke test.
+**Masking A/B measured** (2026-06-11, CPU EP validated GPU-less,
+`docs/REPORT_MASKING_AB.md`): masking *hurts* every depth-driven pose
+path (carving already absorbed the old damage; masking just sparsifies
+registration) — `depth_updates_pose` **stays gated** (masked is *worse*: false
+depth loops drag the graph; blocked on appearance signatures, not masking);
+`reg_band_tolerance 0.15`+masking is the best cafe ATE but only ~2 % — default
+unchanged. Replay knobs `--depth-updates-pose`/`--reg-band-tolerance` exist for
+re-measurement. Map-side value (people never enter the TSDF) stands. **Next
+(top blockers): per-submap appearance signatures (corridor aliasing +
+re-localization + the false-depth-loop blocker), OpenVDB backend.**
 Open work lives in [`docs/ROADMAP.md`](docs/ROADMAP.md) (per-milestone checklists —
 the former TODO.md is folded in).

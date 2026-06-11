@@ -213,11 +213,26 @@ positives on the corridor stress sequences.
   model), `PixelMask` rejection at depth ingest (stamp-gated like colour pairing;
   points never exist downstream), feature-gated `slam-replay --features dynamics`
   (`masking:` YAML / `--mask-model`), CI smoke test on the committed
-  `onnx/yolo11s-seg.onnx`. Still ☐: **measure the A/B on cached real data**
-  (cafe1-1 depth-only 2.8 m, depth→pose 0.16→3.0, laser-band 0.164→0.357 are the
-  numbers to move) and then unlock the two gated bridges (`depth_updates_pose`,
-  `reg_band_tolerance`); flow/depth mask *propagation*; rect re-export at the
-  camera shape (survey: square letterbox loses recall); TensorRT EP on the robot.
+  `onnx/yolo11s-seg-rect.onnx`. ☑ **A/B measured on cached real data**
+  (2026-06-11, CPU EP, `docs/REPORT_MASKING_AB.md`): masking *hurts*
+  every depth-driven pose path (cafe1-1 depth 0.925→1.057 m, odom+depth
+  0.892→1.134 m, market1-1 4.93→5.98 m; person-only class set halves the damage
+  but never beats unmasked) — free-space carving (ADR 0014) already absorbed the
+  dynamics damage the old motivating numbers measured (depth-only was 2.8 m
+  pre-carving, 0.925 m now), so masking mostly *sparsifies* registration
+  (discards the close, high-parallax café furniture). Scan-driven path
+  bit-identical masked/unmasked. Bridge verdicts (new replay knobs
+  `--depth-updates-pose` / `--reg-band-tolerance`): **`depth_updates_pose` stays
+  gated** — masking makes it *worse* (cafe1-2 0.151 → 1.28 unmasked → 6.78
+  masked; verified-loop count explodes 95→238, false-verified depth loops drag
+  the graph → blocked on appearance signatures / stricter depth-loop gating, not
+  on masking); **`reg_band_tolerance 0.15` no longer regresses** (old
+  0.164→0.357 is gone) and with masking gives the best cafe ATE (0.166/0.148 vs
+  0.169/0.151) — a real but ~2 % margin; flip the default only after the
+  loop-verification work, re-measured. CPU EP ≈ 0.2 s/frame (offline-replay OK,
+  robot stays TensorRT). Still ☐: flow/depth mask *propagation*; per-class
+  thresholds + dilation tuning if pose-side gains are re-attempted; TensorRT EP
+  on the robot.
   ⚠ Per ADR 0014: the robot's cameras sit near floor level, so masking may never
   be robust — it is an *enhancer*; every gate must also pass maskless.
 - ☐ Clean-3D-map: depth outlier filtering, post-hoc model filtering, compaction →

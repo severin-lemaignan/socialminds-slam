@@ -90,6 +90,27 @@ views). Key findings:
   style) remains open M5 work: it matters once inference is decimated harder than
   the depth stream or people move fast between masked frames.
 
+## Post-decision measurement (2026-06-11, same day)
+
+The A/B on cached real data (`docs/REPORT_MASKING_AB.md`, CPU EP, GPU-less
+machine) **falsified the unlock expectation at this operating point**: masking
+worsens ATE *and* RPE on every depth-driven pose configuration tested (cafe
+depth-only 0.925→1.057 m; market1-1 4.93→5.98 m; person-only class set hurts
+less but never wins). Free-space carving (ADR 0014) had already absorbed the
+damage the motivating numbers measured — depth-only cafe1-1 was 2.8 m
+pre-carving, 0.925 m unmasked now — so rejection mostly *sparsifies*
+registration (the dynamic class set discards 15–21 % of pixels, including the
+close, high-parallax café furniture). `depth_updates_pose` **stays gated**:
+with it on, masking is *worse* (cafe1-2 1.28 unmasked → 6.78 masked; verified
+loop counts explode 95→238 — false-verified depth loops drag the graph, so the
+real blocker is loop verification, not people). `reg_band_tolerance 0.15` no
+longer regresses and is marginally *best* with masking (cafe ATE 0.166/0.148 vs
+0.169/0.151) — too thin to flip a default. The scan-driven path is bit-identical
+masked/unmasked, and the map-side benefit (dynamic pixels never enter the TSDF)
+stands; decision 6 ("enhancer, never a foundation") is reaffirmed, with the
+pose-side gain still unrealised. CPU EP costs ≈ 0.2 s/frame — fine offline,
+TensorRT remains the robot path.
+
 ## Alternatives considered
 
 - **lraspp/deeplabv3-MobileNet (semantic, VOC):** ~2× faster, but provably cannot
