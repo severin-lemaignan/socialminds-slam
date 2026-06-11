@@ -168,10 +168,20 @@ positives on the corridor stress sequences.
   stamping — ring circuit broke in every variant) and predecessor seeding (fixes
   the first hand-over, but seed-of-seed chains re-create cross-submap error
   feedback: busy-120 0.90 → 2.76 m). The carved + odom + graph state remains the
-  best measured. Remaining directions: per-point *integration-time* classification
-  via the clean-map plan's mask hook (sidecar masks first — works for depth;
-  scans need a geometric equivalent), and re-measuring on the real two-lidar rig
-  (opposite-corner scanners halve the occlusion that drives the newborn problem).
+  best measured. **Round 2 (2026-06-11): integration-time staging also measured
+  and rejected** — hold a sweep one keyframe, veto staged points that later beams
+  see through (proportional overshoot margin; range-scoped to where beams resolve
+  voxels; warm-up for newborn fields). Fixed the ring and the first hand-overs,
+  but steady-state busy decades read 0.13 vs the committed 0.04–0.07 m (the
+  one-keyframe near-field lag is a real price) and multi-hand-over drift still
+  compounds (busy-120 1.39 vs 0.90 m). Full variant ladder in ADR 0014. What
+  survives: the **R\* range-scoping principle** (gate any staging/confirmation
+  mechanism to ranges where beam spacing < voxel size). Remaining directions:
+  *sensor-side* per-point classification — the clean-map mask hook for depth
+  (semantic masks + tracker bridging, PLE-SLAM-style), since the three geometric
+  map-side mechanisms all traded one regime for another; and re-measuring on the
+  real two-lidar rig (opposite-corner scanners halve the occlusion that drives
+  the newborn problem).
 - ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) — still
   **the top depth-path accuracy blocker**: three independent measurements say
   un-masked people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1;

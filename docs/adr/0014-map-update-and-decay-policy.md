@@ -144,3 +144,18 @@ One policy currently serves three memories with different jobs:
   chains across hand-overs reintroduce cross-submap error feedback — the precise
   failure bounded submaps exist to prevent (busy-120: 0.90 → 2.76 m, loops 181 → 44).
   Rejected.
+- **Integration-time staging** (measured 2026-06-11, round 2): hold each sweep's
+  points one keyframe; the next sweep's free segments veto transients *before they
+  become map* (proportional overshoot margin so oblique-wall grazing doesn't veto
+  real walls; commitment by absence-of-contradiction, not re-observation count).
+  The variants and their verdicts, in order: all-range staging starves long-range
+  support (ring spiral — single-sweep beam gaps at range leave stencils incomplete);
+  a re-observation fast path readmits quasi-static walkers through their own
+  one-keyframe-old trail (flat 0.6 m bias); range-scoping staging to where beams
+  resolve voxels (`stage_within ≈ voxel / beam increment` — the R* insight) fixes
+  the ring; a 6-sweep warm-up fixes the first hand-overs. The best composition
+  (range-scoped + warm-up) still loses to the committed design: steady-state busy
+  decades 0.13 vs 0.04–0.07 m (the one-keyframe near-field lag has a real price)
+  and busy-120 drift compounds across hand-overs (1.39 vs 0.90 m). Rejected; the
+  R* range-scoping principle itself is validated and stands ready for whichever
+  mechanism next needs to distinguish dense-stamping from sparse-stamping regimes.
