@@ -88,6 +88,41 @@ upside left to collect at this operating point.
   10 Hz depth — fine for offline replay, **not** robot-real-time on CPU; the
   robot path remains TensorRT (~2.5 ms/frame, per the survey).
 
+## Visual inspection of the masks
+
+`cargo run --release -p slam-replay --example mask_dump --features dynamics --
+--bag data/openloris/cafe1-1.bag --out <dir>` overlays the *actual*
+`slam-dynamics` masks on bag colour frames (red = person, yellow = the rest of
+the dynamic set), evenly spaced through the sequence. Findings (cafe1-1 +
+market1-1, 8 frames each):
+
+- **The masker works as designed.** Masks are well-aligned and people are
+  caught reliably in normal frames — the integration is not the problem.
+- **The dynamic class set over-masks static structure, a lot.** Café: every
+  empty stool/chair/bench is masked (frames run 16–48 % total coverage with
+  people accounting for 1–27 points of that). Market: a wall of stacked
+  storage boxes — the aisle's static structure — masked wholesale (50 % of the
+  frame, person share 10 %). This is exactly the close, high-parallax geometry
+  depth registration leans on.
+- **In crowds, the people *are* the close-range geometry.** Market frames
+  where person-only coverage hits 20–32 %: once masked, what remains in range
+  is floor plus aliased shelf rows — so even person-only masking starves
+  registration there.
+- **Motion blur degrades detection exactly when it matters.** On a
+  fast-rotation frame the person mask shrank (5 % coverage for a much larger
+  person) and landed partially off-target on the bookshelf, while spurious
+  yellow patches appeared on static shelves — masking is least dependable in
+  the frames where registration is most fragile.
+
+This also reconciles the result with the literature: masking-SLAM wins
+(DynaSLAM-style) are mostly *sparse feature-based visual* SLAM, where a few
+feature tracks on a moving person corrupt the pose unrecoverably and the
+benchmark scenes (TUM `fr3/walking`) keep a texture-rich static background in
+view. A dense depth→TSDF pipeline with robust kernels, free-space carving
+(ADR 0014), a wheel-odometry prior and a lidar backbone already absorbs most
+of that damage — so at this operating point masking's residual effect is the
+constraint loss, not the dynamics protection.
+
 ## Conclusions
 
 1. **CPU route: validated.** Build, smoke test, and 14 full masked replays ran
