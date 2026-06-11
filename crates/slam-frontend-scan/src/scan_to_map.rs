@@ -336,16 +336,22 @@ impl ScanToMapOdometry {
     /// submaps vanish from the viewer for the overlap's duration), then the active
     /// field. A submap's position in this list is its creation ordinal and never
     /// changes — viz entities keyed on it keep a stable identity across hand-overs.
+    ///
+    /// Anchors are **world-framed** (the estimate frame: `base ∘ anchor`), matching
+    /// the trajectory the same estimates draw — internal anchors live in the
+    /// odometry frame, and placing them raw displaced the whole map by the initial
+    /// pose whenever a run was seeded with `--init-pose-from-tum`.
     pub fn submaps_3d(&self) -> Vec<(Se2, &SparseTsdf)> {
+        let base = Se2::planar_projection_of(&self.base).0;
         let mut out: Vec<(Se2, &SparseTsdf)> = self
             .frozen
             .iter()
-            .map(|(anchor, _reg, map3d)| (*anchor, map3d))
+            .map(|(anchor, _reg, map3d)| (base.compose(anchor), map3d))
             .collect();
         if let Some(prev) = &self.prev_map {
-            out.push((self.prev_anchor, prev));
+            out.push((base.compose(&self.prev_anchor), prev));
         }
-        out.push((self.submap_birth, &self.map));
+        out.push((base.compose(&self.submap_birth), &self.map));
         out
     }
 

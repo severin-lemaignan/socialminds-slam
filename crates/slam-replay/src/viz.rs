@@ -137,6 +137,14 @@ mod real {
             })
         }
 
+        /// Block until everything logged so far is delivered to the sink — a spawn
+        /// (TCP) run exits right after the final TSDF emission, and without this
+        /// the largest batch of the whole stream can be truncated on the wire,
+        /// leaving the viewer showing the last decimated snapshot instead.
+        pub fn flush(&self) {
+            self.rec.flush_blocking();
+        }
+
         /// Paint an RGB sample per the selected `--rerun-color` mode.
         fn display_color(&self, c: [u8; 3]) -> rerun::Color {
             match self.color_mode {
@@ -320,14 +328,21 @@ mod real {
                     return;
                 }
                 // Budget decimation by spatial hash, not every-k-th: the visit walks
-                // voxels in block-major order, and any structured skip pattern can
-                // alias against the 8-cube block layout as grid-shaped artifacts.
+                // voxels in block-major order, and any structured skip pattern
+                // aliases against the 8-cube block layout as grid/plate artifacts.
+                // The hash needs real avalanche mixing — a linear multiply-add
+                // keeps voxels along lattice planes modulo the stride and *paints*
+                // checkerboards (observed at submap hand-overs).
                 if stride > 1 {
-                    let h = (ix as u64)
-                        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
-                        .wrapping_add((iy as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f))
-                        .wrapping_add((iz as u64).wrapping_mul(0x1656_67b1_9e37_79f9));
-                    if (h >> 16) % stride as u64 != 0 {
+                    let mut h = (ix as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                        ^ (iy as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f)
+                        ^ (iz as u64).wrapping_mul(0x1656_67b1_9e37_79f9);
+                    h ^= h >> 33;
+                    h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+                    h ^= h >> 33;
+                    h = h.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+                    h ^= h >> 33;
+                    if h % stride as u64 != 0 {
                         return;
                     }
                 }
@@ -415,5 +430,7 @@ mod stub {
             _stamp_s: f64,
         ) {
         }
+
+        pub fn flush(&self) {}
     }
 }

@@ -144,3 +144,20 @@ fn graph_receives_consistent_anchor_and_edge_counts() {
         assert!(l.submap < l.active_submap);
     }
 }
+
+/// Submap anchors handed to visualization are world-framed (estimate frame):
+/// a run seeded with an initial pose must place its map at that pose, not at
+/// the odometry origin — the measured "map far from the trajectory" bug.
+#[test]
+fn submap_anchors_are_world_framed() {
+    let init = Se2::new(10.0, 5.0, 0.5).to_pose();
+    let odo = ScanToMapOdometry::anchored_at(init, ScanToMapConfig::default());
+    let (anchor, _) = *odo.submaps_3d().last().expect("active submap");
+    assert!((anchor.x - 10.0).abs() < 1e-9, "anchor.x {}", anchor.x);
+    assert!((anchor.y - 5.0).abs() < 1e-9, "anchor.y {}", anchor.y);
+    assert!(
+        (anchor.theta - 0.5).abs() < 1e-9,
+        "anchor.theta {}",
+        anchor.theta
+    );
+}

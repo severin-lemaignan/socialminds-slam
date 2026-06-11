@@ -999,6 +999,9 @@ fn main() -> Result<()> {
             viz_cell
                 .borrow_mut()
                 .log_tsdf(&submaps_for_viz(odo), end, true);
+            // Spawn (TCP) runs exit right after this largest batch of the whole
+            // stream — block until the sink has actually delivered it.
+            viz_cell.borrow().flush();
         }
     } else if args.map_out.is_some() {
         bail!("--map-out needs --baseline scan-matching-3d (the TSDF front-end)");
