@@ -9,6 +9,7 @@
 
 mod config;
 mod graph;
+mod masking;
 mod metrics;
 mod viz;
 
@@ -151,6 +152,32 @@ struct Args {
     /// Keep every Nth depth frame (30 fps is redundant at ≤ 2 m/s).
     #[arg(long, value_name = "N", default_value_t = 3)]
     depth_every: usize,
+
+    /// Dynamics masking (ADR 0015): a YOLO-seg ONNX model (e.g.
+    /// `onnx/yolo11s-seg.onnx`) runs on the colour frame riding with each kept depth
+    /// frame and rejects dynamic objects' pixels before back-projection. Needs
+    /// `--color-topic` and a build with `--features dynamics`. With `--config`, use
+    /// the YAML `masking:` section instead.
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "depth_topic",
+        conflicts_with = "config"
+    )]
+    mask_model: Option<PathBuf>,
+
+    /// Mask confidence threshold (with --mask-model). Low favours recall — the right
+    /// trade for point rejection.
+    #[arg(long, value_name = "FRACTION", default_value_t = 0.2)]
+    mask_conf: f32,
+
+    /// Mask dilation in model-input pixels (with --mask-model).
+    #[arg(long, value_name = "PX", default_value_t = 8)]
+    mask_dilate: usize,
+
+    /// Classes the mask rejects (with --mask-model).
+    #[arg(long, value_enum, default_value_t = masking::MaskClasses::Dynamic)]
+    mask_classes: masking::MaskClasses,
 
     /// Output TUM trajectory file. Defaults to stdout.
     #[arg(long, value_name = "FILE")]
@@ -400,6 +427,7 @@ fn load_bag_inputs_from_config(
     bag: &Path,
     cfg: &config::RunConfig,
     rig: Option<&SensorRig>,
+    mut masker: Option<slam_datasets::Masker<'_>>,
 ) -> Result<BagInputs> {
     let scan_topics: Vec<&str> = cfg
         .sensors
@@ -485,6 +513,9 @@ fn load_bag_inputs_from_config(
             d.color.as_deref(),
             &depth_cfg,
             d.every_nth,
+            masker
+                .as_mut()
+                .map(|m| &mut **m as slam_datasets::Masker<'_>),
         )
         .with_context(|| format!("reading depth from {} / {}", d.topic, d.info_topic()))?;
         if let Some(rig) = rig {
@@ -518,7 +549,12 @@ fn load_bag_inputs_from_config(
     Ok((imu, scans, clouds, odometry))
 }
 
-fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<BagInputs> {
+fn load_bag_inputs(
+    bag: &Path,
+    args: &Args,
+    rig: Option<&SensorRig>,
+    masker: Option<slam_datasets::Masker<'_>>,
+) -> Result<BagInputs> {
     let imu_topics: Vec<&str> = match (&args.imu_topic, &args.gyro_topic, &args.accel_topic) {
         (Some(imu), None, None) => vec![imu],
         (None, Some(gyro), Some(accel)) => vec![gyro, accel],
@@ -581,6 +617,7 @@ fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<B
             args.color_topic.as_deref(),
             &slam_datasets::DepthConfig::default(),
             args.depth_every,
+            masker,
         )
         .with_context(|| format!("reading depth from {depth_topic} / {info_topic}"))?;
         if let Some(rig) = rig {
@@ -763,10 +800,42 @@ fn main() -> Result<()> {
         (None, false) => None,
     };
 
+    // Dynamics masking (ADR 0015): settings from the YAML `masking:` section or the
+    // --mask-* flags; the model loads up front so a bad path fails before bag I/O.
+    let mask_settings: Option<masking::MaskSettings> = match (&run_cfg, &args.mask_model) {
+        (Some(rc), _) => rc.masking.as_ref().map(|m| masking::MaskSettings {
+            model: m.model.clone(),
+            conf: m.conf,
+            dilate_px: m.dilate_px,
+            classes: m.classes,
+        }),
+        (None, Some(model)) => Some(masking::MaskSettings {
+            model: model.clone(),
+            conf: args.mask_conf,
+            dilate_px: args.mask_dilate,
+            classes: args.mask_classes,
+        }),
+        (None, None) => None,
+    };
+    if mask_settings.is_some() && args.bag.is_none() {
+        bail!("dynamics masking runs on a bag's colour stream: pass --bag");
+    }
+    let mut masking_state = mask_settings
+        .as_ref()
+        .map(masking::Masking::new)
+        .transpose()?;
+
     let (imu, scans, clouds, odometry): BagInputs = if let Some(bag) = &args.bag {
+        let mut mask_fn = masking_state
+            .as_mut()
+            .map(|m| move |c: &slam_datasets::ColorImage| m.mask(c));
+        let masker: Option<slam_datasets::Masker<'_>> = match mask_fn.as_mut() {
+            Some(f) => Some(f),
+            None => None,
+        };
         match &run_cfg {
-            Some(rc) => load_bag_inputs_from_config(bag, rc, rig.as_ref())?,
-            None => load_bag_inputs(bag, &args, rig.as_ref())?,
+            Some(rc) => load_bag_inputs_from_config(bag, rc, rig.as_ref(), masker)?,
+            None => load_bag_inputs(bag, &args, rig.as_ref(), masker)?,
         }
     } else {
         (
@@ -776,6 +845,9 @@ fn main() -> Result<()> {
             load_odom_tum(args.odom.as_deref())?,
         )
     };
+    if let Some(m) = &masking_state {
+        m.summary();
+    }
 
     // Each system needs its primary stream; running it on silence is a usage error.
     match args.system {

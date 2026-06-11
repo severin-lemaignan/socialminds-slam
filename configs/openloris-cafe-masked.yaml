@@ -1,0 +1,27 @@
+# OpenLORIS cafe scenes with dynamics masking (ADR 0015): identical to
+# openloris-cafe.yaml plus YOLO-seg point rejection on the depth stream.
+# Needs a build with `--features dynamics`.
+# Usage: slam-replay --baseline scan-matching-3d --bag cafe1-1.bag --config configs/openloris-cafe-masked.yaml …
+rig:
+  source: bag
+sensors:
+  odometry:
+    - topic: /odom
+  scans:
+    - topic: /scan
+  imus:
+    - gyro_topic: /d400/gyro/sample
+      accel_topic: /d400/accel/sample
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      color: /d400/color/image_raw # also feeds the mask model
+      min_range: 0.3
+      max_range: 6.0
+      every_nth: 3
+masking:
+  model: onnx/yolo11s-seg.onnx
+  # Survey defaults (docs/REPORT_HUMAN_DETECTION.md): low confidence favours recall —
+  # a missed person corrupts the map, a false positive discards a few points.
+  conf: 0.2
+  dilate_px: 8
+  classes: dynamic # person + chairs/couch/plant + carryables + animals + vehicles

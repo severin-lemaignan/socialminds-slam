@@ -39,6 +39,10 @@ rust:checks:
     - cargo test --workspace
     # The feature-gated rerun viz path must not bit-rot (ADR 0011); check-only.
     - cargo check -p slam-replay --features viz
+    # Same for the dynamics-masking path (ADR 0015). The slam-dynamics crate itself
+    # is a workspace member, so `cargo test --workspace` above already ran real
+    # CPU-EP inference against the committed onnx/yolo11s-seg.onnx.
+    - cargo check -p slam-replay --features dynamics
 
 # End-to-end evaluation: build the engine binaries, run the Python harness unit tests,
 # then the gated self-test benchmark (synthesize -> run -> score -> gate). No GPU, no

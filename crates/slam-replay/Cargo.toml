@@ -28,7 +28,12 @@ rerun = { version = "0.33.0", default-features = false, features = ["sdk"], opti
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34"
 slam-backend.workspace = true
+# Dynamics masking: YOLO-seg point rejection at depth ingest (ADR 0015).
+slam-dynamics = { workspace = true, optional = true }
 
 [features]
 # Live / progressive 3D visualization via the rerun viewer (ADR 0011).
 viz = ["dep:rerun"]
+# Dynamics masking (--mask-model / `masking:` in the YAML config): ONNX Runtime is a
+# C++ dependency, so it stays opt-in like the viz stack (ADR 0001/0015).
+dynamics = ["dep:slam-dynamics"]

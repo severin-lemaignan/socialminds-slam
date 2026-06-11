@@ -14,6 +14,39 @@ pub struct RunConfig {
     pub rig: RigConfig,
     #[serde(default)]
     pub sensors: SensorsConfig,
+    /// Dynamics masking (ADR 0015): a YOLO-seg ONNX model rejecting dynamic objects'
+    /// pixels at depth ingest. Applies to every depth sensor that has a `color:`
+    /// topic. Needs a build with `--features dynamics`.
+    pub masking: Option<MaskingConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MaskingConfig {
+    /// Path to the ONNX export (e.g. `onnx/yolo11s-seg.onnx`). Static shape, batch 1;
+    /// ideally exported at the camera's native shape (see ADR 0015 on letterboxing).
+    pub model: PathBuf,
+    /// Confidence threshold. Low is right for point rejection: a missed person
+    /// corrupts the map, a false positive discards a few points.
+    #[serde(default = "default_mask_conf")]
+    pub conf: f32,
+    /// Mask dilation in model-input pixels (boundary insurance; depth edges are
+    /// noisiest exactly there).
+    #[serde(default = "default_mask_dilate")]
+    pub dilate_px: usize,
+    /// `person` or `dynamic` (the survey's person+chairs+carryables set; default).
+    #[serde(default = "default_mask_classes")]
+    pub classes: crate::masking::MaskClasses,
+}
+
+fn default_mask_conf() -> f32 {
+    0.2
+}
+fn default_mask_dilate() -> usize {
+    8
+}
+fn default_mask_classes() -> crate::masking::MaskClasses {
+    crate::masking::MaskClasses::Dynamic
 }
 
 #[derive(Debug, Deserialize)]
@@ -204,6 +237,32 @@ sensors:
             "/d400/aligned_depth_to_color/camera_info"
         );
         assert_eq!(cfg.sensors.depth[0].max_range, 6.0); // default
+    }
+
+    #[test]
+    fn parses_the_masking_section_with_defaults() {
+        let yaml = r#"
+sensors:
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      color: /d400/color/image_raw
+masking:
+  model: onnx/yolo11s-seg.onnx
+"#;
+        let cfg: RunConfig = serde_yaml::from_str(yaml).unwrap();
+        let m = cfg.masking.expect("masking section parses");
+        assert_eq!(m.model, PathBuf::from("onnx/yolo11s-seg.onnx"));
+        assert_eq!(m.conf, 0.2);
+        assert_eq!(m.dilate_px, 8);
+        assert_eq!(m.classes, crate::masking::MaskClasses::Dynamic);
+        // And the explicit form round-trips.
+        let yaml = "masking:\n  model: m.onnx\n  conf: 0.15\n  dilate_px: 4\n  classes: person\n";
+        let cfg: RunConfig = serde_yaml::from_str(yaml).unwrap();
+        let m = cfg.masking.unwrap();
+        assert_eq!(
+            (m.conf, m.dilate_px, m.classes),
+            (0.15, 4, crate::masking::MaskClasses::Person)
+        );
     }
 
     #[test]
