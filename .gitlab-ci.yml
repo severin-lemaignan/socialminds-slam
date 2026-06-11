@@ -46,8 +46,9 @@ rust:checks:
 eval:benchmark:
   stage: test
   script:
+    # cmake builds the vendored GTSAM (slam-gtsam-sys) pulled in by slam-replay.
+    - apt-get update && apt-get install -y --no-install-recommends cmake python3 python3-venv
     - cargo build --release -p slam-replay -p slam-datasets
-    - apt-get update && apt-get install -y --no-install-recommends python3 python3-venv
     - python3 -m venv eval/.venv
     - . eval/.venv/bin/activate
     - pip install --upgrade pip
