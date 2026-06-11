@@ -111,7 +111,8 @@ entity per submap posed by its anchor, refreshed every few seconds so you watch 
 *current* field state (ghosts appearing and being carved away, anchors re-posed by
 the graph). When the depth stream names its colour topic (`--color-topic` / config
 `color:`), voxels carry a running-averaged RGB channel and render as the
-illumination-invariant CIELAB a\*b\* chroma — the coloured 3D map. All on a
+illumination-invariant CIELAB a\*b\* chroma — the coloured 3D map
+(`--rerun-color rgb` paints the stored camera colours as-is instead). All on a
 scrubbable `sensor_time` timeline. The rerun SDK is a heavy dependency, so it is
 **feature-gated** — build once with `--features viz`:
 

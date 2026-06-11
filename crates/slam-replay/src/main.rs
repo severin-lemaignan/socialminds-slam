@@ -175,6 +175,12 @@ struct Args {
     #[arg(long, value_name = "MODE")]
     rerun: Option<String>,
 
+    /// How the coloured map (voxel colour channel + depth points) is painted:
+    /// `chroma` — illumination-invariant CIELAB a*b* at fixed lightness;
+    /// `rgb` — the stored camera colours as-is.
+    #[arg(long, value_enum, default_value_t = viz::ColorMode::Chroma)]
+    rerun_color: viz::ColorMode,
+
     /// Write the final TSDF submap (scan-matching-3d only) as a binary voxel dump:
     /// `STSD` magic, u32 version, f64 voxel size, u64 count, then per voxel
     /// `i32 ix, iy, iz; f32 tsdf, weight` (little-endian).
@@ -861,7 +867,7 @@ fn main() -> Result<()> {
     // the sink while the event loop holds the hook.
     let viz_sink: Option<std::cell::RefCell<viz::Viz>> = match &args.rerun {
         Some(mode) => {
-            let v = viz::Viz::new(mode)?;
+            let v = viz::Viz::new(mode, args.rerun_color)?;
             if let Some(path) = &args.init_pose_from_tum {
                 if let Ok(gt) = Trajectory::read_tum_file(path) {
                     v.log_groundtruth(&gt);

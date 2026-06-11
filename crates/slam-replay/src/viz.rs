@@ -13,6 +13,16 @@
 use anyhow::Result;
 use slam_types::{Pose, Trajectory};
 
+/// How RGB-carrying map content is painted (`--rerun-color`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ColorMode {
+    /// Illumination-invariant CIELAB a\*b\* chroma at fixed lightness — exposure
+    /// and shadows discarded, hue and colour strength kept (ADR 0011).
+    Chroma,
+    /// The stored running-averaged sRGB as-is — what the camera saw.
+    Rgb,
+}
+
 #[cfg(feature = "viz")]
 pub use real::Viz;
 
@@ -91,6 +101,7 @@ mod real {
 
     pub struct Viz {
         rec: rerun::RecordingStream,
+        color_mode: super::ColorMode,
         trajectory: Vec<[f32; 3]>,
         chunk: Vec<[f32; 3]>,
         scans_seen: usize,
@@ -107,7 +118,7 @@ mod real {
     impl Viz {
         /// `mode`: `spawn` (live viewer), `connect[:ADDR]` (running viewer), or
         /// `save:FILE.rrd` (record for later scrubbing).
-        pub fn new(mode: &str) -> Result<Self> {
+        pub fn new(mode: &str, color_mode: super::ColorMode) -> Result<Self> {
             let builder = rerun::RecordingStreamBuilder::new("slam-replay");
             let rec = match mode {
                 "spawn" => builder.spawn()?,
@@ -117,12 +128,21 @@ mod real {
             };
             Ok(Viz {
                 rec,
+                color_mode,
                 trajectory: Vec::new(),
                 chunk: Vec::new(),
                 scans_seen: 0,
                 chunks_logged: 0,
                 tsdf_frozen_logged: 0,
             })
+        }
+
+        /// Paint an RGB sample per the selected `--rerun-color` mode.
+        fn display_color(&self, c: [u8; 3]) -> rerun::Color {
+            match self.color_mode {
+                super::ColorMode::Chroma => chroma(c),
+                super::ColorMode::Rgb => rerun::Color::from_rgb(c[0], c[1], c[2]),
+            }
         }
 
         /// Ground truth, as one static line strip.
@@ -193,7 +213,7 @@ mod real {
             self.log_pose(stamp_s, pose);
             let colored = colors.len() == world.len() && !world.is_empty();
             let point_colors: Vec<rerun::Color> = if colored {
-                colors.iter().map(|&c| chroma(c)).collect()
+                colors.iter().map(|&c| self.display_color(c)).collect()
             } else {
                 vec![rerun::Color::from_rgb(240, 170, 60); world.len()]
             };
@@ -310,7 +330,7 @@ mod real {
                 colors.push(match rgb {
                     Some(c) => {
                         colored_total += 1;
-                        chroma(c)
+                        self.display_color(c)
                     }
                     // Height ramp 0..2 m: blue floor → yellow head-height.
                     None => {
@@ -350,7 +370,7 @@ mod stub {
     pub struct Viz;
 
     impl Viz {
-        pub fn new(_mode: &str) -> Result<Self> {
+        pub fn new(_mode: &str, _color_mode: super::ColorMode) -> Result<Self> {
             anyhow::bail!(
                 "slam-replay was built without visualization; rebuild with \
                  `cargo build --release -p slam-replay --features viz`"
