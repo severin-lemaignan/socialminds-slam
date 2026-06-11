@@ -1,5 +1,7 @@
 # socialminds-slam
 
+[![pipeline status](https://gitlab.iiia.csic.es/severin.lemaignan/socialminds-slam/badges/main/pipeline.svg)](https://gitlab.iiia.csic.es/severin.lemaignan/socialminds-slam/-/commits/main)
+
 A from-scratch, real-time, fully-3D SLAM engine for an indoor mobile robot.
 
 > **Status:** the front-end is live and multi-modal — tilt-compensated 3D scan fans
