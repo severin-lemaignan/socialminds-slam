@@ -134,6 +134,18 @@ struct Args {
     #[arg(long)]
     no_graph: bool,
 
+    /// Let depth clouds correct the pose even when scans are present (default:
+    /// map-only — un-masked people dominate indoor depth views). Intended together
+    /// with dynamics masking (ADR 0015); scan-less runs always update from depth.
+    #[arg(long)]
+    depth_updates_pose: bool,
+
+    /// Half-height (m) of the laser-plane band whose depth points join planar scan
+    /// registration (default 0 = off; ≈ 0.15 with dynamics masking — un-masked
+    /// people at head height degrade the scan matcher, measured 0.164→0.357).
+    #[arg(long, value_name = "METRES")]
+    reg_band_tolerance: Option<f64>,
+
     /// Depth `sensor_msgs/Image` topic to stream from `--bag` as back-projected point
     /// clouds (M4 RGB-D). Use the aligned depth stream when available.
     #[arg(long, value_name = "TOPIC", requires = "bag")]
@@ -154,7 +166,7 @@ struct Args {
     depth_every: usize,
 
     /// Dynamics masking (ADR 0015): a YOLO-seg ONNX model (e.g.
-    /// `onnx/yolo11s-seg.onnx`) runs on the colour frame riding with each kept depth
+    /// `onnx/yolo11s-seg-rect.onnx`) runs on the colour frame riding with each kept depth
     /// frame and rejects dynamic objects' pixels before back-projection. Needs
     /// `--color-topic` and a build with `--features dynamics`. With `--config`, use
     /// the YAML `masking:` section instead.
@@ -923,6 +935,12 @@ fn main() -> Result<()> {
                     }
                     if let Some(v) = args.loop_min_inliers {
                         cfg.loop_min_inliers = v;
+                    }
+                    if args.depth_updates_pose {
+                        cfg.depth_updates_pose = true;
+                    }
+                    if let Some(v) = args.reg_band_tolerance {
+                        cfg.reg_band_tolerance = v;
                     }
                     let mut odo = ScanToMapOdometry::with_extrinsics(init.pose, cfg, extrinsics);
                     // Verified loops feed the GTSAM pose graph (ADR 0010 stage 3b).
