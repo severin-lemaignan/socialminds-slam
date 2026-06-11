@@ -74,9 +74,15 @@ ground truth within tolerance, in CI (GTSAM built CPU-only).
   fans, scan-to-submap registration against narrow-band TSDFs with an ICP degeneracy
   guard, anchor-relative submaps + GTSAM pose graph. **Beat the planar parity gate at
   stages 1+2** (ATE 0.039/0.055 m on cafe1-1/-2, gate: 0.090/0.066, 53× real time,
-  p99 0.9 ms). ⚠ The 2026-06-10 sensor-matrix benchmark measures cafe scan+imu at
-  0.164/0.150 m at HEAD — a parity regression introduced by a later (depth-era) tuning
-  round, not by loops/graph (A/B-excluded); bisect queued. Office: 0.019–0.106 m.
+  p99 0.9 ms). The 2026-06-10 sensor-matrix cafe scan+imu figure (0.164/0.150 m)
+  is **not a regression** — bisected 2026-06-11: HEAD still scores 0.039/0.056 under
+  the gate's protocol (scan-only, identity rig). The matrix runs the true bag rig +
+  IMU, which re-measures the known rig-vs-GT-convention effect (see 51332bc: OpenLORIS
+  GT never corrected the 2.3° lidar tilt, so geometrically truer trajectories score
+  ~0.15–0.16 against it — identical at 51332bc and HEAD). Office: 0.019–0.106 m.
+  Caveat found en route: identity rig *plus* the d400 IMU topics is a silent
+  misconfiguration (camera-frame gravity read as base-frame → bogus tilt → front-end
+  coasts, ATE 7–9 m); `slam-replay` should warn when IMU topics stream without a rig.
 - ☑ RGB-D depth registration (the 3D-source path): range-adaptive sampled clouds
   register against a separate coarser 3D field; wheel-odometry motion prior
   (`/odom`, ADR 0012 — the robot ships IMU-less; measured no-IMU cost ≈ 4 cm on
