@@ -12,6 +12,11 @@ authors.workspace = true
 name = "slam-replay"
 path = "src/main.rs"
 
+[[example]]
+# Visual mask inspection (ADR 0015): overlay YOLO-seg masks on bag colour frames.
+name = "mask_dump"
+required-features = ["dynamics"]
+
 [dependencies]
 slam-types.workspace = true
 slam-baseline.workspace = true

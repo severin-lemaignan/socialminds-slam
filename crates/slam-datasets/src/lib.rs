@@ -26,7 +26,9 @@ use std::path::Path;
 use slam_types::{ImuSample, LaserScan2D, PointCloud};
 
 use bag::BagFile;
-pub use depth_msg::{parse_camera_info, parse_depth_image, ColorImage, DepthConfig, Intrinsics};
+pub use depth_msg::{
+    parse_camera_info, parse_color_image, parse_depth_image, ColorImage, DepthConfig, Intrinsics,
+};
 pub use imu_msg::parse_imu;
 pub use odom_msg::parse_odometry;
 pub use scan_msg::parse_scan;
