@@ -23,7 +23,7 @@ pub struct RunConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MaskingConfig {
-    /// Path to the ONNX export (e.g. `onnx/yolo11s-seg.onnx`). Static shape, batch 1;
+    /// Path to the ONNX export (e.g. `onnx/yolo11s-seg-rect.onnx`). Static shape, batch 1;
     /// ideally exported at the camera's native shape (see ADR 0015 on letterboxing).
     pub model: PathBuf,
     /// Confidence threshold. Low is right for point rejection: a missed person
@@ -251,7 +251,7 @@ masking:
 "#;
         let cfg: RunConfig = serde_yaml::from_str(yaml).unwrap();
         let m = cfg.masking.expect("masking section parses");
-        assert_eq!(m.model, PathBuf::from("onnx/yolo11s-seg.onnx"));
+        assert_eq!(m.model, PathBuf::from("onnx/yolo11s-seg-rect.onnx"));
         assert_eq!(m.conf, 0.2);
         assert_eq!(m.dilate_px, 8);
         assert_eq!(m.classes, crate::masking::MaskClasses::Dynamic);

@@ -9,7 +9,8 @@ fn model_path() -> Option<std::path::PathBuf> {
     let path = std::env::var_os("SLAM_YOLO_MODEL")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../onnx/yolo11s-seg.onnx")
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../onnx/yolo11s-seg-rect.onnx")
         });
     path.exists().then_some(path)
 }
@@ -23,8 +24,8 @@ fn masks_a_synthetic_frame_at_source_resolution() {
     let mut seg = YoloSeg::load(&model, SegConfig::default()).expect("model loads on the CPU EP");
     assert_eq!(
         seg.input_size(),
-        (640, 640),
-        "the committed export is square 640"
+        (640, 480),
+        "the committed export is rect 640×480 (camera-shaped, ADR 0015)"
     );
 
     // A flat indoor-ish scene: grey wall, darker floor, a doorway-like band. No

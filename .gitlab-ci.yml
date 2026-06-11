@@ -41,7 +41,7 @@ rust:checks:
     - cargo check -p slam-replay --features viz
     # Same for the dynamics-masking path (ADR 0015). The slam-dynamics crate itself
     # is a workspace member, so `cargo test --workspace` above already ran real
-    # CPU-EP inference against the committed onnx/yolo11s-seg.onnx.
+    # CPU-EP inference against the committed onnx/yolo11s-seg-rect.onnx.
     - cargo check -p slam-replay --features dynamics
 
 # End-to-end evaluation: build the engine binaries, run the Python harness unit tests,
