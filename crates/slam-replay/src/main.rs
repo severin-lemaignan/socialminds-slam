@@ -50,7 +50,7 @@ enum System {
 )]
 struct Args {
     /// Which system to run. (Flag named --baseline for harness compatibility.)
-    #[arg(long = "baseline", value_enum)]
+    #[arg(long = "baseline", value_enum, default_value = "scan-matching-3d")]
     system: System,
 
     /// IMU CSV input (`t gx gy gz ax ay az`). Repeatable for multi-IMU rigs; prefix
