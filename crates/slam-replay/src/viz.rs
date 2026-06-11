@@ -238,7 +238,12 @@ mod real {
         /// with its anchor as the entity transform, so the viewer places it in the
         /// world — and a re-optimised anchor would re-pose voxels without rewrites,
         /// exactly like the engine itself.
-        pub fn log_tsdf(&self, submaps: &[(f64, f64, f64, &dyn TsdfMap)], stamp_s: f64) {
+        pub fn log_tsdf(
+            &self,
+            submaps: &[(f64, f64, f64, &dyn TsdfMap)],
+            stamp_s: f64,
+            announce: bool,
+        ) {
             self.rec.set_duration_secs("sensor_time", stamp_s);
             let mut total = 0usize;
             for (i, &(ax, ay, atheta, map)) in submaps.iter().enumerate() {
@@ -286,11 +291,13 @@ mod real {
                     .with_fill_mode(rerun::FillMode::Solid),
                 );
             }
-            eprintln!(
-                "slam-replay: rerun: TSDF surface {} voxels across {} submaps",
-                total,
-                submaps.len()
-            );
+            if announce {
+                eprintln!(
+                    "slam-replay: rerun: TSDF surface {} voxels across {} submaps",
+                    total,
+                    submaps.len()
+                );
+            }
         }
     }
 }
@@ -330,6 +337,7 @@ mod stub {
             &self,
             _submaps: &[(f64, f64, f64, &dyn slam_map::TsdfMap)],
             _stamp_s: f64,
+            _announce: bool,
         ) {
         }
     }

@@ -310,6 +310,14 @@ fn run_timed(
     (traj, latencies, start.elapsed())
 }
 
+/// The engine's submaps as the anchor-tuple slice `Viz::log_tsdf` consumes.
+fn submaps_for_viz(odo: &ScanToMapOdometry) -> Vec<(f64, f64, f64, &dyn slam_map::TsdfMap)> {
+    odo.submaps_3d()
+        .into_iter()
+        .map(|(a, m)| (a.x, a.y, a.theta, m as &dyn slam_map::TsdfMap))
+        .collect()
+}
+
 /// Write the binary TSDF voxel dump (see `--map-out` help for the format).
 fn write_map_dump(map: &dyn slam_map::TsdfMap, path: &Path) -> Result<()> {
     use io::Write as _;
@@ -849,7 +857,9 @@ fn main() -> Result<()> {
         }
     };
 
-    let mut viz_sink = match &args.rerun {
+    // RefCell: the per-event hook and the periodic TSDF snapshots (below) both need
+    // the sink while the event loop holds the hook.
+    let viz_sink: Option<std::cell::RefCell<viz::Viz>> = match &args.rerun {
         Some(mode) => {
             let v = viz::Viz::new(mode)?;
             if let Some(path) = &args.init_pose_from_tum {
@@ -857,16 +867,17 @@ fn main() -> Result<()> {
                     v.log_groundtruth(&gt);
                 }
             }
-            Some(v)
+            Some(std::cell::RefCell::new(v))
         }
         None => None,
     };
     // Per-scan viz hook: lift beams through the (static) extrinsic, into world via the
     // estimate. Attitude is not replayed here — close enough for inspection.
     let mut hook;
-    let on_scan: Option<ScanHook<'_>> = match viz_sink.as_mut() {
-        Some(viz) => {
+    let mut on_scan: Option<ScanHook<'_>> = match viz_sink.as_ref() {
+        Some(viz_cell) => {
             hook = move |event: &VizEvent<'_>, est: &slam_types::StampedPose| {
+                let mut viz = viz_cell.borrow_mut();
                 let frame = match event {
                     VizEvent::Scan(scan) => scan.frame,
                     VizEvent::Cloud(cloud) => cloud.frame,
@@ -920,7 +931,46 @@ fn main() -> Result<()> {
     };
 
     let events = merged_events(&imu, &scans, &clouds, &odometry);
-    let (traj, latencies, wall) = run_timed(engine.as_dyn(), &events, on_scan);
+    // With viz on, run in sensor-time segments and re-log the live TSDF after each:
+    // the timeline then shows the *current* field state (ghosts appearing and being
+    // carved away — ADR 0014), which the append-only scan chunks cannot.
+    const TSDF_SNAPSHOT_PERIOD_S: f64 = 2.0;
+    let (traj, latencies, wall) = if viz_sink.is_some() && matches!(engine, Engine::ScanToMap(_)) {
+        let mut traj = Trajectory::new();
+        let mut latencies = Vec::with_capacity(events.len());
+        let mut wall = std::time::Duration::ZERO;
+        let mut start_idx = 0;
+        while start_idx < events.len() {
+            let t0 = events[start_idx].stamp();
+            let end_idx = start_idx
+                + events[start_idx..]
+                    .partition_point(|e| (e.stamp() - t0).as_seconds() < TSDF_SNAPSHOT_PERIOD_S);
+            // Plain match (not `.map`): the reborrow must be local to this iteration.
+            let seg_hook: Option<ScanHook<'_>> = match on_scan {
+                Some(ref mut h) => Some(&mut **h),
+                None => None,
+            };
+            let (t, l, w) = run_timed(engine.as_dyn(), &events[start_idx..end_idx], seg_hook);
+            for p in t.poses() {
+                // A segment boundary can re-emit the previous estimate; keep stamps unique.
+                if traj.poses().last().is_none_or(|q| q.stamp != p.stamp) {
+                    traj.push(*p);
+                }
+            }
+            latencies.extend(l);
+            wall += w;
+            if let (Engine::ScanToMap(odo), Some(viz_cell)) = (&engine, &viz_sink) {
+                let stamp = events[end_idx - 1].stamp().as_seconds();
+                viz_cell
+                    .borrow()
+                    .log_tsdf(&submaps_for_viz(odo), stamp, false);
+            }
+            start_idx = end_idx;
+        }
+        (traj, latencies, wall)
+    } else {
+        run_timed(engine.as_dyn(), &events, on_scan)
+    };
 
     if let Engine::ScanToMap(odo) = &engine {
         let st = odo.stats();
@@ -936,14 +986,9 @@ fn main() -> Result<()> {
         if let Some(path) = &args.map_out {
             write_map_dump(odo.map(), path)?;
         }
-        if let Some(viz) = &viz_sink {
+        if let Some(viz_cell) = &viz_sink {
             let end = events.last().map_or(0.0, |e| e.stamp().as_seconds());
-            let submaps: Vec<(f64, f64, f64, &dyn slam_map::TsdfMap)> = odo
-                .submaps_3d()
-                .into_iter()
-                .map(|(a, m)| (a.x, a.y, a.theta, m as &dyn slam_map::TsdfMap))
-                .collect();
-            viz.log_tsdf(&submaps, end);
+            viz_cell.borrow().log_tsdf(&submaps_for_viz(odo), end, true);
         }
     } else if args.map_out.is_some() {
         bail!("--map-out needs --baseline scan-matching-3d (the TSDF front-end)");

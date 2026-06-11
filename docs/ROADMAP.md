@@ -151,9 +151,16 @@ positives on the corridor stress sequences.
   the 60 s busy gate), maskless by construction.
 - ☐ Busy-crowd residual bias: carved + odom still reads 0.90 m vs 0.062 clean on
   the 120 s busy scenario — freshly-stamped people act as moving attractors for
-  the very next scans. Candidate: confirmation-delayed integration (stage voxels
-  N keyframes before they enter the registration band) or inlier-only integration;
-  measure against the busy gate.
+  the very next scans. **Localised 2026-06-11:** the error onsets coincide with
+  submap hand-overs (~28 s spacing at the synthetic weave speed; per-decade error
+  0.04 → 0.5–1.0 m right after each birth) — a freshly-born field built from its
+  first keyframes in a crowd is wall-thin and people-rich until carving and
+  reinforcement catch up; the pose graph repairs most of it where revisits exist
+  (final-decade 1.05 m open-loop vs 0.51 with loops+graph). Candidates:
+  confirmation-delayed integration (stage voxels N keyframes before they enter
+  the registration band), inlier-only integration, or seeding the newborn field
+  from the predecessor's surviving (carve-survived) geometry; measure against the
+  busy gate.
 - ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) — still
   **the top depth-path accuracy blocker**: three independent measurements say
   un-masked people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1;
