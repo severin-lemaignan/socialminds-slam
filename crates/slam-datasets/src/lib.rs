@@ -26,7 +26,7 @@ use std::path::Path;
 use slam_types::{ImuSample, LaserScan2D, PointCloud};
 
 use bag::BagFile;
-pub use depth_msg::{parse_camera_info, parse_depth_image, DepthConfig, Intrinsics};
+pub use depth_msg::{parse_camera_info, parse_depth_image, ColorImage, DepthConfig, Intrinsics};
 pub use imu_msg::parse_imu;
 pub use odom_msg::parse_odometry;
 pub use scan_msg::parse_scan;
@@ -259,6 +259,11 @@ pub fn merge_split_imu(gyro: &[ImuSample], accel: &[ImuSample]) -> Vec<ImuSample
     out
 }
 
+/// A dynamics masker (ADR 0015): turns a colour frame into a per-pixel rejection
+/// mask. `None` means "no mask for this frame" — the frame decodes unmasked
+/// (ADR 0014: masking is an enhancer, never a foundation).
+pub type Masker<'a> = &'a mut dyn FnMut(&ColorImage) -> Option<slam_types::PixelMask>;
+
 /// Read a depth-image stream as back-projected point clouds, in one pass.
 ///
 /// `info_topic` is the `CameraInfo` riding alongside `depth_topic` (ADR 0009:
@@ -266,6 +271,10 @@ pub fn merge_split_imu(gyro: &[ImuSample], accel: &[ImuSample]) -> Vec<ImuSample
 /// image *before* decoding — depth at 30 fps is redundant for a ≤ 2 m/s base, and
 /// skipping early keeps a 10-minute bag's clouds in memory. Returns the time-sorted
 /// clouds + the depth stream's `header.frame_id`.
+///
+/// `masker`, when given, runs on the colour frame paired with each *kept* depth
+/// frame (so it pays inference only at the decimated rate) and its mask suppresses
+/// those pixels' points. Masking therefore requires a colour topic.
 pub fn read_depth_clouds<P: AsRef<Path>>(
     path: P,
     depth_topic: &str,
@@ -273,6 +282,7 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
     color_topic: Option<&str>,
     cfg: &DepthConfig,
     every_nth: usize,
+    mut masker: Option<Masker<'_>>,
 ) -> Result<(Vec<PointCloud>, String), BagError> {
     let mut bag = BagFile::open(path)?;
     let conns = connection_map(&bag);
@@ -304,6 +314,23 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
     // The most recent colour frame; each kept depth frame samples it (stamp-gated
     // inside `parse_depth_image`, so a dropped colour stream degrades to uncoloured).
     let mut last_color: Option<crate::depth_msg::ColorImage> = None;
+    // The mask for `last_color`, computed lazily (only when a kept depth frame needs
+    // it — inference runs at the decimated rate) and memoised by colour stamp, since
+    // several depth frames can pair with one colour frame.
+    let mut last_mask: Option<slam_types::PixelMask> = None;
+    let mut last_mask_stamp: Option<slam_types::Stamp> = None;
+    let mut refresh_mask =
+        move |color: Option<&crate::depth_msg::ColorImage>,
+              memo: &mut Option<slam_types::PixelMask>,
+              memo_stamp: &mut Option<slam_types::Stamp>| {
+            let (Some(m), Some(c)) = (masker.as_mut(), color) else {
+                return;
+            };
+            if *memo_stamp != Some(c.stamp) {
+                *memo = m(c);
+                *memo_stamp = Some(c.stamp);
+            }
+        };
     let mut pending: Vec<Vec<u8>> = Vec::new(); // depth frames seen before the first info
     let mut clouds: Vec<PointCloud> = Vec::new();
     let mut frame_id = String::new();
@@ -315,8 +342,10 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
             if intrinsics.is_none() {
                 let (k, _frame) = parse_camera_info(data)?;
                 intrinsics = Some(k);
+                refresh_mask(last_color.as_ref(), &mut last_mask, &mut last_mask_stamp);
                 for raw in pending.drain(..) {
-                    let (cloud, f) = parse_depth_image(&raw, &k, cfg, last_color.as_ref())?;
+                    let (cloud, f) =
+                        parse_depth_image(&raw, &k, cfg, last_color.as_ref(), last_mask.as_ref())?;
                     frame_id = f;
                     clouds.push(cloud);
                 }
@@ -338,7 +367,9 @@ pub fn read_depth_clouds<P: AsRef<Path>>(
         seen += 1;
         match &intrinsics {
             Some(k) => {
-                let (cloud, f) = parse_depth_image(data, k, cfg, last_color.as_ref())?;
+                refresh_mask(last_color.as_ref(), &mut last_mask, &mut last_mask_stamp);
+                let (cloud, f) =
+                    parse_depth_image(data, k, cfg, last_color.as_ref(), last_mask.as_ref())?;
                 frame_id = f;
                 clouds.push(cloud);
             }

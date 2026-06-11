@@ -20,7 +20,7 @@
 //! Depth encodings handled: `16UC1`/`mono16` (millimetres) and `32FC1` (metres).
 //! Colour encodings handled: `rgb8`, `bgr8`, `rgba8`, `bgra8`.
 
-use slam_types::{PointCloud, Stamp, Vec3};
+use slam_types::{PixelMask, PointCloud, Stamp, Vec3};
 
 use crate::BagError;
 
@@ -93,6 +93,26 @@ impl ColorImage {
             self.data[off + self.rgb.1],
             self.data[off + self.rgb.2],
         ]
+    }
+
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// The image as packed RGB8 (`3·width·height` bytes) — the layout segmentation
+    /// models consume (ADR 0015 dynamics masking).
+    pub fn to_rgb8(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(3 * self.width * self.height);
+        for v in 0..self.height {
+            for u in 0..self.width {
+                out.extend_from_slice(&self.rgb_at(u, v));
+            }
+        }
+        out
     }
 }
 
@@ -212,11 +232,17 @@ pub fn parse_camera_info(data: &[u8]) -> Result<(Intrinsics, String), BagError> 
 
 /// Decode one depth `sensor_msgs/Image` body and back-project it into a camera-frame
 /// point cloud (no image bytes retained). Returns the cloud + its frame_id.
+///
+/// `mask` is an optional dynamics mask (ADR 0015) computed on the colour stream:
+/// masked pixels never become points. It is stamp-gated exactly like the colour
+/// pairing and rescaled if its resolution differs from the depth grid — and per
+/// ADR 0014 it is an enhancer only: absent or stale, the frame decodes unmasked.
 pub fn parse_depth_image(
     data: &[u8],
     intrinsics: &Intrinsics,
     cfg: &DepthConfig,
     color: Option<&ColorImage>,
+    mask: Option<&PixelMask>,
 ) -> Result<(PointCloud, String), BagError> {
     let mut c = LeCursor { data, pos: 0 };
     let (stamp, frame_id) = c.header()?;
@@ -244,8 +270,10 @@ pub fn parse_depth_image(
     }
 
     // Colour rides only when the paired frame is plausibly the *same* moment —
-    // a stale frame would paint the wrong wall.
+    // a stale frame would paint the wrong wall. The mask gates identically: a stale
+    // mask would carve a person-shaped hole out of the wall they walked past.
     let color = color.filter(|c| (c.stamp.as_seconds() - stamp.as_seconds()).abs() < 0.05);
+    let mask = mask.filter(|m| (m.stamp.as_seconds() - stamp.as_seconds()).abs() < 0.05);
     let base = cfg.min_stride.max(1);
     let mut points = Vec::with_capacity(4096);
     let mut colors: Vec<[u8; 3]> = Vec::with_capacity(if color.is_some() { 4096 } else { 0 });
@@ -265,6 +293,10 @@ pub fn parse_depth_image(
                     k *= 2;
                 }
                 if u % k == 0 && v % k == 0 {
+                    if mask.is_some_and(|m| m.masks(u, v, width, height)) {
+                        u += base;
+                        continue;
+                    }
                     points.push(Vec3::new(
                         (u as f64 - intrinsics.cx) / intrinsics.fx * z,
                         (v as f64 - intrinsics.cy) / intrinsics.fy * z,
@@ -386,7 +418,7 @@ mod tests {
         mm[2 * 4] = 1000; // (u=0, v=2): 1 m
         mm[2 * 4 + 2] = 2000; // (u=2, v=2): 2 m
         let body = encode_depth_16u("d400_color", 4, 4, &mm);
-        let (cloud, frame) = parse_depth_image(&body, &k, &cfg, None).unwrap();
+        let (cloud, frame) = parse_depth_image(&body, &k, &cfg, None, None).unwrap();
         assert_eq!(frame, "d400_color");
         assert_eq!(cloud.stamp.as_nanos(), 100_000_000_500);
         assert_eq!(cloud.points.len(), 2);
@@ -425,7 +457,7 @@ mod tests {
             }
         }
         let body = encode_depth_16u("f", 16, 16, &mm);
-        let (cloud, _) = parse_depth_image(&body, &k, &cfg, None).unwrap();
+        let (cloud, _) = parse_depth_image(&body, &k, &cfg, None, None).unwrap();
         let near = cloud.points.iter().filter(|p| p.z < 1.0).count();
         let far = cloud.points.iter().filter(|p| p.z > 1.0).count();
         // Far half sampled at lattice 2 → 8×4 columns... at least 4× denser than near.
@@ -450,7 +482,7 @@ mod tests {
         };
         let mm = [2000u16; 256];
         let body = encode_depth_16u("f", 16, 16, &mm);
-        let (cloud, _) = parse_depth_image(&body, &k, &cfg, None).unwrap();
+        let (cloud, _) = parse_depth_image(&body, &k, &cfg, None, None).unwrap();
         assert!(cloud.points.len() <= 20, "{}", cloud.points.len());
     }
 
@@ -493,7 +525,7 @@ mod tests {
         px[2 * 4] = [200, 10, 10];
         px[2 * 4 + 2] = [10, 10, 200];
         let color = parse_color_image(&encode_rgb8("d400_color", 4, 4, &px)).unwrap();
-        let (cloud, _) = parse_depth_image(&depth, &k, &cfg, Some(&color)).unwrap();
+        let (cloud, _) = parse_depth_image(&depth, &k, &cfg, Some(&color), None).unwrap();
         assert_eq!(cloud.points.len(), 2);
         assert_eq!(cloud.colors, vec![[200, 10, 10], [10, 10, 200]]);
     }
@@ -512,9 +544,84 @@ mod tests {
         let mut color = parse_color_image(&encode_rgb8("f", 4, 4, &[[9u8; 3]; 16])).unwrap();
         color.stamp = Stamp::from_nanos(color.stamp.as_nanos() + 200_000_000); // +0.2 s
         let (cloud, _) =
-            parse_depth_image(&depth, &k, &DepthConfig::default(), Some(&color)).unwrap();
+            parse_depth_image(&depth, &k, &DepthConfig::default(), Some(&color), None).unwrap();
         assert_eq!(cloud.points.len(), 1);
         assert!(cloud.colors.is_empty(), "stale colour must not pair");
+    }
+
+    #[test]
+    fn masked_pixels_never_become_points() {
+        let k = Intrinsics {
+            fx: 2.0,
+            fy: 2.0,
+            cx: 2.0,
+            cy: 2.0,
+        };
+        let cfg = DepthConfig {
+            target_spacing: 1e-6,
+            min_stride: 2,
+            max_points: 100,
+            min_range: 0.5,
+            max_range: 3.0,
+        };
+        let mut mm = [0u16; 16];
+        mm[2 * 4] = 1000; // (u=0, v=2)
+        mm[2 * 4 + 2] = 2000; // (u=2, v=2)
+        let depth = encode_depth_16u("d400_color", 4, 4, &mm);
+        let mut px = [[0u8; 3]; 16];
+        px[2 * 4] = [200, 10, 10];
+        px[2 * 4 + 2] = [10, 10, 200];
+        let color = parse_color_image(&encode_rgb8("d400_color", 4, 4, &px)).unwrap();
+
+        // Mask (2,2) at the same stamp: only the (0,2) point survives, and the
+        // colours stay parallel to the points.
+        let mut mask = PixelMask {
+            stamp: color.stamp,
+            width: 4,
+            height: 4,
+            data: vec![false; 16],
+        };
+        mask.data[2 * 4 + 2] = true;
+        let (cloud, _) = parse_depth_image(&depth, &k, &cfg, Some(&color), Some(&mask)).unwrap();
+        assert_eq!(cloud.points.len(), 1);
+        assert_eq!(cloud.colors, vec![[200, 10, 10]]);
+        assert!((cloud.points[0].x + 1.0).abs() < 1e-12);
+
+        // The mask rescales when computed at a different resolution (here 2×2: its
+        // cell (1,1) covers depth pixels (2..4, 2..4)).
+        let half = PixelMask {
+            stamp: color.stamp,
+            width: 2,
+            height: 2,
+            data: vec![false, false, false, true],
+        };
+        let (cloud, _) = parse_depth_image(&depth, &k, &cfg, Some(&color), Some(&half)).unwrap();
+        assert_eq!(cloud.points.len(), 1, "rescaled mask hits (2,2) only");
+
+        // A stale mask (≥ 50 ms off) is ignored — ADR 0014: enhancer, never load-bearing.
+        let stale = PixelMask {
+            stamp: Stamp::from_nanos(mask.stamp.as_nanos() + 200_000_000),
+            ..mask
+        };
+        let (cloud, _) = parse_depth_image(&depth, &k, &cfg, Some(&color), Some(&stale)).unwrap();
+        assert_eq!(cloud.points.len(), 2, "stale mask must not reject anything");
+    }
+
+    #[test]
+    fn color_image_exports_packed_rgb8() {
+        // bgra8 input: to_rgb8 must reorder and drop alpha.
+        let mut v = header("f");
+        v.extend_from_slice(&1u32.to_le_bytes()); // height
+        v.extend_from_slice(&2u32.to_le_bytes()); // width
+        v.extend_from_slice(&5u32.to_le_bytes());
+        v.extend_from_slice(b"bgra8");
+        v.push(0);
+        v.extend_from_slice(&8u32.to_le_bytes()); // step
+        v.extend_from_slice(&8u32.to_le_bytes());
+        v.extend_from_slice(&[10, 20, 30, 255, 40, 50, 60, 255]); // BGRA ×2
+        let img = parse_color_image(&v).unwrap();
+        assert_eq!((img.width(), img.height()), (2, 1));
+        assert_eq!(img.to_rgb8(), vec![30, 20, 10, 60, 50, 40]);
     }
 
     #[test]
@@ -526,9 +633,14 @@ mod tests {
             cy: 2.0,
         };
         let body = encode_depth_16u("f", 4, 4, &[0u16; 16]);
-        assert!(
-            parse_depth_image(&body[..body.len() - 10], &k, &DepthConfig::default(), None).is_err()
-        );
+        assert!(parse_depth_image(
+            &body[..body.len() - 10],
+            &k,
+            &DepthConfig::default(),
+            None,
+            None
+        )
+        .is_err());
     }
 
     #[test]
@@ -548,6 +660,6 @@ mod tests {
         body.extend_from_slice(&3u32.to_le_bytes());
         body.extend_from_slice(&3u32.to_le_bytes());
         body.extend_from_slice(&[0, 0, 0]);
-        assert!(parse_depth_image(&body, &k, &DepthConfig::default(), None).is_err());
+        assert!(parse_depth_image(&body, &k, &DepthConfig::default(), None, None).is_err());
     }
 }
