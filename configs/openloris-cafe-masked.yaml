@@ -19,7 +19,7 @@ sensors:
       max_range: 6.0
       every_nth: 3
 masking:
-  model: onnx/yolo11s-seg.onnx
+  model: onnx/yolo11s-seg-rect.onnx
   # Survey defaults (docs/REPORT_HUMAN_DETECTION.md): low confidence favours recall —
   # a missed person corrupts the map, a false positive discards a few points.
   conf: 0.2

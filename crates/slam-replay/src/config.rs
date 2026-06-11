@@ -247,7 +247,7 @@ sensors:
     - topic: /d400/aligned_depth_to_color/image_raw
       color: /d400/color/image_raw
 masking:
-  model: onnx/yolo11s-seg.onnx
+  model: onnx/yolo11s-seg-rect.onnx
 "#;
         let cfg: RunConfig = serde_yaml::from_str(yaml).unwrap();
         let m = cfg.masking.expect("masking section parses");
