@@ -205,13 +205,21 @@ positives on the corridor stress sequences.
   map-side mechanisms all traded one regime for another; and re-measuring on the
   real two-lidar rig (opposite-corner scanners halve the occlusion that drives
   the newborn problem).
-- ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) — still
-  **the top depth-path accuracy blocker**: three independent measurements say
-  un-masked people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1;
-  depth→pose fusion 0.16→3.0; laser-band depth contribution 0.164→0.357). Unlocks
-  the two gated bridges (`depth_updates_pose`, `reg_band_tolerance`). ⚠ Per
-  ADR 0014: the robot's cameras sit near floor level, so masking may never be
-  robust — it is an *enhancer*; every gate must also pass maskless.
+- ◐ Dynamic masking (YOLO-seg; ADR 0015) — **integration landed 2026-06-11** on the
+  back of the model survey (`docs/REPORT_HUMAN_DETECTION.md`: yolo11s-seg, dynamic
+  class set, conf 0.2, dilation — recall over precision, since a missed person
+  corrupts the map and a false positive discards a few points): `slam-dynamics`
+  crate (ONNX Runtime CPU EP, pure-Rust pre/post, fp16, input shape read from the
+  model), `PixelMask` rejection at depth ingest (stamp-gated like colour pairing;
+  points never exist downstream), feature-gated `slam-replay --features dynamics`
+  (`masking:` YAML / `--mask-model`), CI smoke test on the committed
+  `onnx/yolo11s-seg.onnx`. Still ☐: **measure the A/B on cached real data**
+  (cafe1-1 depth-only 2.8 m, depth→pose 0.16→3.0, laser-band 0.164→0.357 are the
+  numbers to move) and then unlock the two gated bridges (`depth_updates_pose`,
+  `reg_band_tolerance`); flow/depth mask *propagation*; rect re-export at the
+  camera shape (survey: square letterbox loses recall); TensorRT EP on the robot.
+  ⚠ Per ADR 0014: the robot's cameras sit near floor level, so masking may never
+  be robust — it is an *enhancer*; every gate must also pass maskless.
 - ☐ Clean-3D-map: depth outlier filtering, post-hoc model filtering, compaction →
   a *compact* map suitable for downstream tasks (semantic segmentation); plan
   drafted in [clean-map-plan.md](clean-map-plan.md)

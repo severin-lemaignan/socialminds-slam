@@ -63,6 +63,15 @@ Top priority is **loop closure / global consistency**. Full requirements in
    time-based decay** (erodes unobserved geometry — measured 15× worse); frozen
    submaps stay immutable (filter-at-freeze instead); **masking is an enhancer,
    never a foundation** (floor-level cameras). — ADR 0014
+9. **Dynamics masking = yolo11s-seg ONNX at depth ingest** (ADR 0015, from the
+   survey in `docs/REPORT_HUMAN_DETECTION.md`): `slam-dynamics` runs it via `ort`
+   (CPU EP default; TensorRT on the robot), dynamic class set, conf 0.2, dilated
+   mask; pixels are rejected **before back-projection** (`PixelMask`, stamp-gated
+   like colour). Feature-gated (`slam-replay --features dynamics`; `masking:` YAML /
+   `--mask-model`) — ONNX Runtime never becomes a second mandatory C++ dep. Model
+   committed in `onnx/` (20 MB; ⚠ AGPL weights, revisit before redistribution).
+   The square 640 export loses recall vs a rect export at the camera's shape —
+   the input shape is read from the model, so a rect re-export drops in. — ADR 0015
 
 ## Approach
 **Write the novel core ourselves** (orchestration, fusion, front-ends, map); **reuse the
@@ -154,9 +163,12 @@ anchor-relative submaps + **GTSAM pose graph wired** (stage 3b; optimise on ever
 verified loop, anchors re-posed, voxels never rewritten). Rerun viz shows the coloured
 3D map (CIELAB a*b*, illumination-invariant), true-size voxel cubes, per-submap TSDF
 entities. Map ghosts from unmasked people are evicted by **free-space carving**
-(ADR 0014; 98.7 % stale-ghost eviction measured, CI-gated, maskless). **Next (top
-blockers): dynamics masking for the depth path (an enhancer, never load-bearing —
-ADR 0014), per-submap appearance signatures (corridor aliasing + re-localization),
-OpenVDB backend.**
+(ADR 0014; 98.7 % stale-ghost eviction measured, CI-gated, maskless). **Dynamics
+masking integrated** (ADR 0015, 2026-06-11): `slam-dynamics` + ingest-side
+`PixelMask` rejection + `--features dynamics` replay wiring + CI smoke test;
+remaining: A/B-measure it on cached real data, then unlock the gated depth bridges
+(`depth_updates_pose`, `reg_band_tolerance`). **Next (top blockers): measure
+masking A/B on the depth path, per-submap appearance signatures (corridor
+aliasing + re-localization), OpenVDB backend.**
 Open work lives in [`docs/ROADMAP.md`](docs/ROADMAP.md) (per-milestone checklists —
 the former TODO.md is folded in).

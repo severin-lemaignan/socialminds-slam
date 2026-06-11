@@ -9,8 +9,9 @@ A from-scratch, real-time, fully-3D SLAM engine for an indoor mobile robot.
 > URDF / `tf_static`, wheel-odometry motion prior (IMU optional), geometrically
 > verified loop closure feeding a GTSAM pose graph over anchor-relative submaps —
 > benchmarked against the OpenLORIS-Scene dataset and the published state of the art
-> (see the [roadmap](docs/ROADMAP.md)). Next: dynamics masking (people) and
-> appearance-based loop signatures (corridors).
+> (see the [roadmap](docs/ROADMAP.md)). Dynamics masking (YOLO-seg point rejection
+> at depth ingest, ADR 0015) is wired in behind `--features dynamics`. Next:
+> measuring its A/B on real data, and appearance-based loop signatures (corridors).
 
 ## What this is
 
@@ -44,6 +45,8 @@ Design priorities, in order:
 | Visualization | **rerun for live/progressive 3D** (feature-gated); matplotlib for quick 2D | [0011](docs/adr/0011-visualization-stack.md) |
 | IMU | **Optional accuracy enhancer, never a prerequisite** (the robot ships without one) | [0012](docs/adr/0012-imu-optional.md) |
 | Run configuration | **YAML selects sensors & ingest tuning — never calibration** | [0013](docs/adr/0013-run-configuration.md) |
+| Map decay | **Contradiction-driven free-space carving; no time decay; masking never load-bearing** | [0014](docs/adr/0014-map-update-and-decay-policy.md) |
+| Dynamics masking | **YOLO11s-seg via ONNX Runtime at depth ingest** (feature-gated, enhancer-only) | [0015](docs/adr/0015-dynamics-masking-yolo-onnx.md) |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan.
@@ -58,12 +61,15 @@ crates/                Rust workspace (the engine; middleware-independent core)
   slam-rig/            Sensor rig: frames + extrinsics from URDF / tf_static
   slam-map/            3D map substrate: narrow-band TSDF behind a batch-level trait
   slam-frontend-scan/  Scan/depth front-end: PLICP, attitude, scan-to-submap, loops
+  slam-dynamics/       Dynamics masking: YOLO-seg ONNX inference → per-pixel
+                       rejection masks (ADR 0015; consumed at depth ingest)
   slam-backend/        Factor-graph optimisation (wraps GTSAM via slam-gtsam-sys)
   slam-gtsam-sys/      cxx shim over the vendored GTSAM (static, Boost-free build)
   slam-datasets/       ROS1 bag reader (no ROS install): IMU, scans, depth+colour,
                        odometry, tf_static
   slam-replay/         CLI: run a system over a dataset → TUM trajectory (+ viz)
 configs/               Run configurations (ADR 0013): sensor sets per dataset/robot
+onnx/                  Committed segmentation-model exports (ADR 0015, onnx/README.md)
 docs/                  Architecture, roadmap, and Architecture Decision Records
   adr/                 One file per decision
 eval/                  CPU-only evaluation harness (Python): datasets, metrics, gates
