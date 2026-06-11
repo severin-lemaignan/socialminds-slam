@@ -260,6 +260,16 @@ DEFAULT_PEOPLE: tuple[PersonSpec, ...] = (
     PersonSpec(start=(1.5, 3.5), end=(1.5, -1.5), period_s=12.0, phase_rad=math.pi),
 )
 
+#: A *busy* social environment (~29 % of beams hit people): the crossers above plus
+#: three more, including a "queue" person who lingers in nearly the same spot — the
+#: case that re-stamps the same field region until uncarved registration collapses
+#: (measured: 120 s scan-only ATE 114 m uncarved vs 2.7 m carved — ADR 0014).
+BUSY_PEOPLE: tuple[PersonSpec, ...] = DEFAULT_PEOPLE + (
+    PersonSpec(start=(-1.5, 1.0), end=(4.5, 1.0), period_s=14.0, phase_rad=0.7),
+    PersonSpec(start=(0.5, -1.5), end=(3.5, 3.5), period_s=20.0, phase_rad=2.1),
+    PersonSpec(start=(3.0, 0.5), end=(3.4, 0.9), period_s=30.0),
+)
+
 
 @dataclass(frozen=True)
 class ScanSpec:

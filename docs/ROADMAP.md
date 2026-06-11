@@ -141,12 +141,19 @@ positives on the corridor stress sequences.
   GPU TSDF/ESDF
 - ☑ **Free-space carving** (ADR 0014, the occupancy-decay commitment realised as
   decay-by-contradiction): beams passing through a voxel evict it (multiplicative
-  weight decay, map-product field only; registration fields keep long memory; no
-  time decay; frozen submaps immutable). Measured on the synthetic dynamic variant:
-  stale ghost voxels 2384 → 30 (98.7 % evicted; the survivors are people *currently
-  standing there* — truthful), walls intact, ATE unchanged, ~1 ms p99 cost
-  (no-loops protocol) — CI-gated end-to-end (`test_map_hygiene.py`), maskless by
-  construction.
+  weight decay, **every active field**; no time decay; frozen submaps immutable).
+  Measured: stale ghost voxels 2384 → 30 on the dynamic variant (98.7 % evicted;
+  survivors are people *currently standing there* — truthful), walls intact, cafe1
+  parity ATE exact, p99 0.9 → ~3.5 ms (accepted explicitly). The busy-crowd
+  scenario (~29 % beams on people, 120 s) is why registration fields carve too:
+  uncarved they collapse (ATE 114 m scan-only / 1.66 m with odom prior, half the
+  scans coasting) vs 0.90 m carved. CI-gated end-to-end (`test_map_hygiene.py` incl.
+  the 60 s busy gate), maskless by construction.
+- ☐ Busy-crowd residual bias: carved + odom still reads 0.90 m vs 0.062 clean on
+  the 120 s busy scenario — freshly-stamped people act as moving attractors for
+  the very next scans. Candidate: confirmation-delayed integration (stage voxels
+  N keyframes before they enter the registration band) or inlier-only integration;
+  measure against the busy gate.
 - ☐ Dynamic masking (YOLO-seg + flow/depth propagation; CPU EP fallback) — still
   **the top depth-path accuracy blocker**: three independent measurements say
   un-masked people dominate the error (depth-only odometry 2.8 m ATE on cafe1-1;

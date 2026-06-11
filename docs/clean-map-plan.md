@@ -160,10 +160,12 @@ The TSDF realization of the occupancy-decay commitment (ADR 0002/0004),
 evicting people/door ghosts that input filtering cannot catch:
 
 1. **Asymmetric free-space carving** — ✅ **done** (ADR 0014, 2026-06-11):
-   multiplicative weight decay along free segments, map-product field only,
+   multiplicative weight decay along free segments, **every active field**,
    block-skip ray walk; measured 98.7 % stale-ghost eviction on the synthetic
-   dynamic variant at ~1 ms p99, CI-gated (`eval/tests/test_map_hygiene.py`,
-   maskless by construction). Depth rays carve the same field automatically.
+   dynamic variant, and the difference between collapse (114 m) and tracking
+   (0.90 m) on the 120 s busy-crowd scenario; p99 0.9 → ~3.5 ms accepted.
+   CI-gated (`eval/tests/test_map_hygiene.py` incl. the 60 s busy gate, maskless
+   by construction). Depth rays carve the same fields automatically.
 2. **Weight-cap sanity**: the local field's cap of 100 000 means early wrong
    geometry is unrevisable; tune toward the literature's 64–256 so the map
    stays plastic. Benchmark-gated — the high cap may be load-bearing for

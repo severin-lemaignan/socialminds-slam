@@ -90,6 +90,40 @@ def materialize_synthetic(workdir: Path, spec=None) -> Sequence:
     )
 
 
+def materialize_synthetic_busy(workdir: Path, duration_s: float = 60.0) -> Sequence:
+    """The *busy* social stress variant (ADR 0014): ~29 % of beams hit people,
+    including a lingering "queue" walker, over a longer horizon — the scenario where
+    an uncarved registration field collapses. Ships scans **and** wheel odometry: the
+    robot always has the odom prior (ADR 0012), and without any prior even a carved
+    field coasts unboundedly in a crowd this dense.
+    """
+    from . import synthetic
+
+    spec = synthetic.TrajectorySpec(duration_s=duration_s)
+    samples = synthetic.generate(spec)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    gt_tum = workdir / "groundtruth.tum"
+    scan_csv = workdir / "scan.csv"
+    odom_tum = workdir / "odom.tum"
+    scan_spec = synthetic.ScanSpec(
+        people=synthetic.BUSY_PEOPLE, follower=synthetic.FollowerSpec()
+    )
+    synthetic.write_groundtruth_tum(samples, gt_tum)
+    synthetic.write_scan_csv(synthetic.generate_scans(samples, scan_spec), scan_csv, scan_spec)
+    synthetic.write_odom_tum(synthetic.derive_odometry(samples), odom_tum)
+    return Sequence(
+        name="synthetic-busy",
+        source="synthetic",
+        imu_csv=None,
+        groundtruth_tum=gt_tum,
+        duration_s=spec.duration_s,
+        has_gyro=False,
+        scan_csv=scan_csv,
+        odom_csv=odom_tum,
+    )
+
+
 def materialize_synthetic_dynamic(workdir: Path, spec=None) -> Sequence:
     """The *dynamic* scan variant (ADR 0010's clean + noisy convention).
 

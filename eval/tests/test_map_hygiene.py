@@ -9,6 +9,7 @@ dynamics masking.
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 from pathlib import Path
 
@@ -98,3 +99,39 @@ def test_clean_map_has_no_ghosts(tmp_path):
     seq = datasets.materialize_synthetic(tmp_path / "clean")
     dump = _run_to_dump(binary, seq.scan_csv, tmp_path / "clean.stsd")
     assert stsd.ghost_fraction(dump, ROOM) < 0.01
+
+
+def test_busy_environment_stays_tracked(tmp_path):
+    """The registration-field regression gate (ADR 0014).
+
+    60 s in a dense crowd (~29 % of beams hit people, including a lingering "queue"
+    walker), with the wheel-odometry prior the robot always has (ADR 0012). With an
+    uncarved registration field this scenario collapses (120 s variant measured:
+    ATE 114 m scan-only / 1.7 m with odom; carved: 0.90 m). Short dynamic gates
+    cannot catch this — ghosts only bite once current people overlap earlier stamps.
+    Observed with carving: ATE 0.31, 98 % matched.
+    """
+    binary = _replay_or_skip()
+    seq = datasets.materialize_synthetic_busy(tmp_path / "busy")
+    out = tmp_path / "busy.tum"
+    proc = subprocess.run(
+        [
+            str(binary),
+            "--baseline", "scan-matching-3d",
+            "--scan", str(seq.scan_csv),
+            "--odom", str(seq.odom_csv),
+            "--out", str(out),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    from harness import metrics as hm
+
+    ate = hm.ate(seq.groundtruth_tum, out, align=False).rmse
+    assert ate < 1.0, f"busy-crowd ATE {ate:.2f} m — registration-field hygiene regressed"
+
+    health = next(l for l in proc.stderr.splitlines() if "front-end health" in l)
+    m = re.search(r"(\d+) matched / (\d+) coasted", health)
+    matched, coasted = int(m.group(1)), int(m.group(2))
+    assert matched / (matched + coasted) > 0.9, f"mostly coasting in the crowd: {health}"

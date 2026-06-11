@@ -58,10 +58,11 @@ Top priority is **loop closure / global consistency**. Full requirements in
 
 8. **Map decay = contradiction-driven free-space carving** (ADR 0014): a beam passing
    through a voxel proves it empty — multiplicative weight decay, eviction below
-   weight 1. Carves the 5 cm map-product field only (registration fields keep long
-   memory — measured load-bearing); **no time-based decay**; frozen submaps stay
-   immutable (filter-at-freeze instead); **masking is an enhancer, never a
-   foundation** (floor-level cameras). — ADR 0014
+   weight 1, **every active field** (an uncarved registration field collapses after
+   ~1 min in a crowd: 114 m ATE measured; carved + odom prior: 0.90 m). **No
+   time-based decay** (erodes unobserved geometry — measured 15× worse); frozen
+   submaps stay immutable (filter-at-freeze instead); **masking is an enhancer,
+   never a foundation** (floor-level cameras). — ADR 0014
 
 ## Approach
 **Write the novel core ourselves** (orchestration, fusion, front-ends, map); **reuse the

@@ -106,10 +106,13 @@ impl Default for ScanToMapConfig {
                 voxel_size: 0.025,
                 truncation: 0.075,
                 max_weight: 100000.0,
-                // Registration fields are not carved (ADR 0014): they are measured
-                // ghost-robust (band rejection), stability is their job, and this is
-                // the hot 2.5 cm field. Eviction belongs to the map product below.
-                carve_factor: 1.0,
+                // Carved like every active field (ADR 0014): on the 120 s busy
+                // scenario an uncarved registration field accumulates person
+                // crescents until tracking collapses (ATE 114 m scan-only, 1.7 m
+                // with the odom prior; carved: 2.7 m / 0.90 m). Short runs hide
+                // this — the ghosts are only harmful once current people overlap
+                // earlier stamps.
+                carve_factor: 0.5,
             },
             // 5 cm / 15 cm: the swept trade-off (see commit). Finer fields score
             // better open-loop near-range (2.5 cm: 0.46 vs 0.81 on cafe depth-only)

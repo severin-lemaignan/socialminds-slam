@@ -54,13 +54,24 @@ One policy currently serves three memories with different jobs:
    weight 1 the voxel reverts to unobserved. The TSDF value is never edited — carving
    is an evidence-removal rule, not a fusion rule. Voxels never observed again keep
    their memory forever; only actively contradicted geometry dies. Config-gated in
-   `TsdfConfig` (`carve_factor`, 1.0 = off). **On for the map-product field (5 cm
-   `tsdf_3d`), off for the registration fields**: registration is measured
-   ghost-robust (band rejection), stability is its policy, and the fine 2.5 cm field
-   is the hot path — carving it cost p99 0.9 → 15 ms on cafe1 for zero accuracy gain
-   (measured 2026-06-11). The free-segment walk probes at half-block strides and
-   descends to voxel resolution only across allocated spans, so empty corridors cost
-   a handful of hash probes per ray.
+   `TsdfConfig` (`carve_factor`, 1.0 = off), **on for every active field —
+   registration fields included.** The free-segment walk probes at half-block
+   strides and descends to voxel resolution only across allocated spans, so empty
+   corridors cost a handful of hash probes per ray.
+
+   *Correction (same day):* the first version of this ADR exempted the registration
+   fields, on two measurements that did not survive scrutiny. The "carving the reg
+   field costs p99 0.9 → 15 ms" figure was a mis-attribution — the 15 ms tail is
+   loop-closure events (present with carving off too); the true cost of carving all
+   fields is p99 0.9 → ~3.5 ms / −25 % RTF (no-loops protocol, cafe1). And "ghosts
+   are inert for registration" only holds on *short* runs: a 120 s busy scenario
+   (~29 % of beams on people, including a lingering "queue" walker) collapses an
+   uncarved registration field — **ATE 114 m scan-only / 1.66 m with the odom
+   prior, half the scans coasting** — because current people eventually overlap
+   earlier stamps and become moving attractors. Carved: 2.7 m / 0.90 m, tracking
+   held (98 % matched). Accuracy parity on cafe1 is unaffected (0.039/0.054).
+   CI-gated: `test_busy_environment_stays_tracked` (60 s busy + odom prior,
+   maskless).
 2. **No time-based decay in the TSDF.** ADR 0004's "occupancy decay" commitment is
    realised *as carving*: decay-by-contradiction, not decay-by-clock. Uniform
    forgetting is the `max_weight: 8` failure spelled differently and is hostile to
@@ -82,10 +93,15 @@ One policy currently serves three memories with different jobs:
 
 - **Easier:** the map product self-heals — revisited space evicts people, moved
   chairs, opened doors without any semantic model; the Nav2/reMap/mesh consumers see
-  current geometry; the `max_weight` tension dissolves.
+  current geometry; the `max_weight` tension dissolves; registration survives busy
+  social environments (the robot's actual deployment) instead of collapsing after
+  ~a minute of crowd exposure.
 - **Harder / costs:** integration now walks full free segments — bounded by visiting
-  only allocated blocks (hash-skip), measured in the benchmark like any change.
-  Grazing rays can transiently carve true-wall band voxels; continuous reinforcement
+  only allocated blocks (hash-skip). Measured on cafe1 (no-loops protocol): keyframe
+  p99 0.9 → ~3.5 ms, RTF 53× → ~38× — accepted explicitly per the ADR 0010 parity
+  discipline; the absolute budget (≥ 40 ms per scan at 25 Hz) keeps 10× headroom,
+  and per-beam subsampling of the carve is the ready knob if it tightens. Grazing
+  rays can transiently carve true-wall band voxels; continuous reinforcement
   out-heals the 0.5 decay in practice — guarded by the parity gate (clean accuracy
   must hold) and the dynamic-variant gates.
 - **Risks accepted:** carving trusts the pose — under gross drift it could erode true
