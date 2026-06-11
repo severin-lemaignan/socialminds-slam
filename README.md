@@ -113,6 +113,28 @@ and the final TSDF surface as true-size voxel cubes, one entity per submap posed
 its anchor — all on a scrubbable `sensor_time` timeline. The rerun SDK is a heavy
 dependency, so it is **feature-gated** — build once with `--features viz`:
 
+### Visualization of synthetic data
+
+```bash
+# 1. one-time: viz-enabled engine + the viewer        (already done just now)
+cargo build --release -p slam-replay --features viz
+pip install rerun-sdk
+
+# 2. materialise the dynamic variant (done — files are in eval/_run/synthetic-dynamic/)
+cd eval && . .venv/bin/activate
+python -c "from pathlib import Path; from harness import datasets; \
+           datasets.materialize_synthetic_dynamic(Path('_run/synthetic-dynamic'))"
+cd ..
+
+# 3. live view
+./target/release/slam-replay --baseline scan-matching-3d \
+    --scan eval/_run/synthetic-dynamic/scan.csv \
+    --init-pose-from-tum eval/_run/synthetic-dynamic/groundtruth.tum \
+    --rerun spawn --out /dev/null
+````
+
+### Visualization of real datasets
+
 ```bash
 # one-time: the viz-enabled engine + the viewer itself
 cargo build --release -p slam-replay --features viz
