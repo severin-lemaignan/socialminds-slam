@@ -1,0 +1,20 @@
+# Masking A/B: the market sensor set (openloris-market.yaml) with person-only
+# masking — markets are crowded with people but the "furniture" (shelves) is the
+# registrable structure, so person-only is the natural operating point there.
+rig:
+  source: bag
+sensors:
+  odometry:
+    - topic: /odom
+  imus:
+    - gyro_topic: /d400/gyro/sample
+      accel_topic: /d400/accel/sample
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      color: /d400/color/image_raw # also feeds the mask model
+      every_nth: 3
+masking:
+  model: onnx/yolo11s-seg-rect.onnx
+  conf: 0.2
+  dilate_px: 8
+  classes: person

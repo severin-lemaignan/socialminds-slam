@@ -1,0 +1,15 @@
+# Sensor-set ablation config (harness.sensor_matrix): depth + person-only masking.
+# Control for the masking A/B — the `dynamic` class set also rejects chairs/couch/
+# plant, which in a café are *static registrable geometry*; person-only separates
+# "reject people" from "reject furniture".
+rig: {source: bag}
+sensors:
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      color: /d400/color/image_raw # feeds the mask model
+      every_nth: 3
+masking:
+  model: onnx/yolo11s-seg-rect.onnx
+  conf: 0.2
+  dilate_px: 8
+  classes: person

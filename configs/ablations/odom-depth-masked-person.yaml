@@ -1,0 +1,14 @@
+# Sensor-set ablation config (harness.sensor_matrix): odom + depth + person-only
+# masking (see depth-masked-person.yaml for the rationale).
+rig: {source: bag}
+sensors:
+  odometry: [{topic: /odom}]
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      color: /d400/color/image_raw # feeds the mask model
+      every_nth: 3
+masking:
+  model: onnx/yolo11s-seg-rect.onnx
+  conf: 0.2
+  dilate_px: 8
+  classes: person

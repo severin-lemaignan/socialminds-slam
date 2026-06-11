@@ -1,0 +1,21 @@
+# OpenLORIS market scenes with dynamics masking (ADR 0015): identical to
+# openloris-market.yaml plus YOLO-seg point rejection on the depth stream.
+# Market is the depth-drives-pose case (no 2D laser in these bags), so masking
+# acts directly on the pose path here. Needs a build with `--features dynamics`.
+rig:
+  source: bag
+sensors:
+  odometry:
+    - topic: /odom
+  imus:
+    - gyro_topic: /d400/gyro/sample
+      accel_topic: /d400/accel/sample
+  depth:
+    - topic: /d400/aligned_depth_to_color/image_raw
+      color: /d400/color/image_raw # also feeds the mask model
+      every_nth: 3
+masking:
+  model: onnx/yolo11s-seg-rect.onnx
+  conf: 0.2
+  dilate_px: 8
+  classes: dynamic
