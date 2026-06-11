@@ -106,6 +106,10 @@ impl Default for ScanToMapConfig {
                 voxel_size: 0.025,
                 truncation: 0.075,
                 max_weight: 100000.0,
+                // Registration fields are not carved (ADR 0014): they are measured
+                // ghost-robust (band rejection), stability is their job, and this is
+                // the hot 2.5 cm field. Eviction belongs to the map product below.
+                carve_factor: 1.0,
             },
             // 5 cm / 15 cm: the swept trade-off (see commit). Finer fields score
             // better open-loop near-range (2.5 cm: 0.46 vs 0.81 on cafe depth-only)
@@ -115,6 +119,9 @@ impl Default for ScanToMapConfig {
                 voxel_size: 0.05,
                 truncation: 0.15,
                 max_weight: 100000.0,
+                // The map product carves (ADR 0014): measured free on cafe1 with the
+                // block-skip walk (p99 within noise of carve-off, ATE unchanged).
+                carve_factor: 0.5,
             },
             max_iterations: 12,
             translation_epsilon: 1e-6,

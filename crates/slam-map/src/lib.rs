@@ -26,9 +26,14 @@ pub struct TsdfConfig {
     /// Truncation distance (m): the half-width of the band updated around a surface
     /// hit. Values are clamped to ±truncation.
     pub truncation: f64,
-    /// Integration weight cap — bounds memory of stale geometry and lets the map
-    /// keep adapting (the precursor of occupancy decay, ADR 0004).
+    /// Integration weight cap — averaging inertia for registration stability.
+    /// Eviction of stale geometry is carving's job, not the cap's (ADR 0014).
     pub max_weight: f32,
+    /// Free-space carving (ADR 0014): each ray's free segment multiplies the weight
+    /// of every allocated voxel it crosses by this factor (contradiction-driven
+    /// eviction — a beam passing through a voxel proves it empty); below weight 1
+    /// the voxel reverts to unobserved. `1.0` disables carving.
+    pub carve_factor: f32,
 }
 
 impl Default for TsdfConfig {
@@ -37,6 +42,7 @@ impl Default for TsdfConfig {
             voxel_size: 0.05,
             truncation: 0.15,
             max_weight: 64.0,
+            carve_factor: 0.5,
         }
     }
 }

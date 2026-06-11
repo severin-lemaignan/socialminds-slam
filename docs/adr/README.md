@@ -19,3 +19,4 @@ get the next number; superseded ones are marked, not deleted. Use
 | [0011](0011-visualization-stack.md) | Visualization: rerun for live/progressive 3D (feature-gated); matplotlib 2D stays | accepted |
 | [0012](0012-imu-optional.md) | The IMU is an optional accuracy enhancer, never a prerequisite | accepted |
 | [0013](0013-run-configuration.md) | YAML run configuration: sensor-set selection, not calibration | accepted |
+| [0014](0014-map-update-and-decay-policy.md) | Map decay = contradiction-driven carving; no time decay; masking never load-bearing | accepted |

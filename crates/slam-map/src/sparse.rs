@@ -85,6 +85,78 @@ impl SparseTsdf {
         v.weight = w_new;
     }
 
+    /// Free-space carving (ADR 0014): the ray from `origin` along `dir` observed
+    /// nothing for `free_len` metres, so every allocated voxel it crosses is
+    /// contradicted — decay its weight multiplicatively; below 1 it reverts to
+    /// unobserved. Never allocates, and under a narrow band almost all free space is
+    /// *unallocated blocks*: probe at half-block strides and descend to voxel
+    /// resolution only across allocated spans, so an empty corridor costs a handful
+    /// of hash probes per ray, not hundreds of voxel steps.
+    fn carve_ray(&mut self, origin: Vec3, dir: Vec3, free_len: f64) {
+        let voxel = self.cfg.voxel_size;
+        if free_len < voxel {
+            return;
+        }
+        let stride = voxel * BLOCK_SIDE as f64 * 0.5;
+        // Phase 1: find allocated spans (merged, so descent never revisits a voxel).
+        let mut spans: Vec<(f64, f64)> = Vec::new();
+        let mut last_key = None;
+        let mut s = 0.0;
+        while s <= free_len + stride {
+            let sc = s.min(free_len);
+            let q = origin + dir * sc;
+            let idx = self.voxel_of(q);
+            let (key, _) = split(idx.0, idx.1, idx.2);
+            if last_key != Some(key) {
+                last_key = Some(key);
+                if self.blocks.contains_key(&key) {
+                    let (a, b) = ((sc - stride).max(0.0), (sc + stride).min(free_len));
+                    match spans.last_mut() {
+                        Some(span) if a <= span.1 => span.1 = b,
+                        _ => spans.push((a, b)),
+                    }
+                }
+            }
+            if sc >= free_len {
+                break;
+            }
+            s += stride;
+        }
+        // Phase 2: voxel-resolution decay across the allocated spans.
+        let mut last_voxel = None;
+        let mut cached: Option<(BlockKey, bool)> = None; // (key, allocated?)
+        for (a, b) in spans {
+            let n = ((b - a) / voxel) as usize;
+            for k in 0..=n {
+                let q = origin + dir * (a + k as f64 * voxel).min(b);
+                let idx = self.voxel_of(q);
+                if last_voxel == Some(idx) {
+                    continue;
+                }
+                last_voxel = Some(idx);
+                let (key, off) = split(idx.0, idx.1, idx.2);
+                let allocated = match cached {
+                    Some((k, a)) if k == key => a,
+                    _ => {
+                        let a = self.blocks.contains_key(&key);
+                        cached = Some((key, a));
+                        a
+                    }
+                };
+                if !allocated {
+                    continue;
+                }
+                let v = &mut self.blocks.get_mut(&key).expect("cached as allocated")[off];
+                if v.weight > 0.0 {
+                    v.weight *= self.cfg.carve_factor;
+                    if v.weight < 1.0 {
+                        *v = EMPTY;
+                    }
+                }
+            }
+        }
+    }
+
     /// Trilinear SDF + analytic gradient over the 8 surrounding voxel centres.
     ///
     /// **Planar degeneracy:** a 2D lidar's fan is a measure-zero slice — it observes a
@@ -175,6 +247,7 @@ impl TsdfMap for SparseTsdf {
         // Half-voxel stepping covers every voxel the band crosses; consecutive
         // duplicates are skipped so no voxel is double-counted within one ray.
         let step = self.cfg.voxel_size * 0.5;
+        let carve = self.cfg.carve_factor < 1.0;
         for &p in points {
             let v = p - origin;
             let dist = v.norm();
@@ -184,6 +257,11 @@ impl TsdfMap for SparseTsdf {
             let dir = v / dist;
             let start = (dist - trunc).max(0.0);
             let end = dist + trunc;
+            if carve {
+                // The segment before the band is observed empty; a one-voxel margin
+                // keeps the carve from nibbling the band this ray is reinforcing.
+                self.carve_ray(origin, dir, start - self.cfg.voxel_size);
+            }
             let n = ((end - start) / step) as usize + 1;
             let mut last = None;
             for k in 0..=n {
@@ -322,6 +400,88 @@ mod tests {
             "band blew up: {} voxels",
             map.allocated_voxels()
         );
+    }
+
+    /// A "person" stood at x = 1 long enough to be confidently mapped, then left:
+    /// beams now reaching the wall behind must evict the ghost (ADR 0014), while the
+    /// continuously-reinforced wall survives.
+    #[test]
+    fn ghost_is_evicted_by_seeing_through() {
+        let mut map = SparseTsdf::new(TsdfConfig::default());
+        let origin = Vec3::new(0.0, 0.0, 0.2);
+        let person: Vec<Vec3> = (-8..=8)
+            .flat_map(|y| (4..=12).map(move |z| Vec3::new(1.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect();
+        let wall: Vec<Vec3> = (-40..=40)
+            .flat_map(|y| (0..=16).map(move |z| Vec3::new(2.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect();
+
+        for _ in 0..6 {
+            map.integrate_points(origin, &person);
+        }
+        let at_person = Vec3::new(0.95, 0.0, 0.2);
+        assert!(map.sample(at_person).is_some(), "ghost was mapped");
+
+        // The person walks away: the same lines of sight now hit the wall.
+        for _ in 0..6 {
+            map.integrate_points(origin, &wall);
+        }
+        assert!(
+            map.sample(at_person).is_none(),
+            "ghost must be carved once seen through: {:?}",
+            map.sample(at_person)
+        );
+        let front = map
+            .sample(Vec3::new(1.94, 0.0, 0.2))
+            .expect("wall observed");
+        assert!(front.sdf > 0.0, "wall survives carving: {}", front.sdf);
+        let behind = map
+            .sample(Vec3::new(2.06, 0.0, 0.2))
+            .expect("wall observed");
+        assert!(behind.sdf < 0.0);
+    }
+
+    #[test]
+    fn carve_factor_one_disables_eviction() {
+        let mut map = SparseTsdf::new(TsdfConfig {
+            carve_factor: 1.0,
+            ..TsdfConfig::default()
+        });
+        let origin = Vec3::new(0.0, 0.0, 0.2);
+        let person: Vec<Vec3> = (-8..=8)
+            .flat_map(|y| (4..=12).map(move |z| Vec3::new(1.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect();
+        let wall: Vec<Vec3> = (-40..=40)
+            .flat_map(|y| (0..=16).map(move |z| Vec3::new(2.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect();
+        for _ in 0..6 {
+            map.integrate_points(origin, &person);
+        }
+        for _ in 0..6 {
+            map.integrate_points(origin, &wall);
+        }
+        assert!(
+            map.sample(Vec3::new(0.95, 0.0, 0.2)).is_some(),
+            "with carving off the ghost persists"
+        );
+    }
+
+    /// Carving is an eviction rule, never an allocation: free space stays unallocated.
+    #[test]
+    fn carving_never_allocates() {
+        let on = wall_map();
+        let mut off = SparseTsdf::new(TsdfConfig {
+            carve_factor: 1.0,
+            ..TsdfConfig::default()
+        });
+        let points: Vec<Vec3> = (-40..=40)
+            .flat_map(|y| (0..=16).map(move |z| Vec3::new(2.0, y as f64 * 0.025, z as f64 * 0.025)))
+            .collect();
+        let origin = Vec3::new(0.0, 0.0, 0.2);
+        for _ in 0..4 {
+            off.integrate_points(origin, &points);
+        }
+        assert_eq!(on.allocated_voxels(), off.allocated_voxels());
     }
 
     #[test]
