@@ -315,14 +315,21 @@ mod real {
             let mut pts: Vec<[f32; 3]> = Vec::new();
             let mut colors: Vec<rerun::Color> = Vec::new();
             let mut colored_total = 0usize;
-            let mut nth = 0usize;
             map.visit_voxels_colored(&mut |ix, iy, iz, tsdf, _w, rgb| {
                 if (tsdf as f64).abs() > voxel {
                     return;
                 }
-                nth += 1;
-                if !nth.is_multiple_of(stride) {
-                    return;
+                // Budget decimation by spatial hash, not every-k-th: the visit walks
+                // voxels in block-major order, and any structured skip pattern can
+                // alias against the 8-cube block layout as grid-shaped artifacts.
+                if stride > 1 {
+                    let h = (ix as u64)
+                        .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                        .wrapping_add((iy as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f))
+                        .wrapping_add((iz as u64).wrapping_mul(0x1656_67b1_9e37_79f9));
+                    if (h >> 16) % stride as u64 != 0 {
+                        return;
+                    }
                 }
                 let z = (iz as f64 + 0.5) * voxel;
                 pts.push([
