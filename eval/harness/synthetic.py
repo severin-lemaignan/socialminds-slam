@@ -214,12 +214,62 @@ def write_odom_tum(rows: list[tuple], path: Path) -> None:
 
 
 @dataclass(frozen=True)
+class PersonSpec:
+    """A walking 'person': a circle commuting smoothly between two waypoints.
+
+    Position interpolates `start → end → start` over one ``period_s`` with sinusoidal
+    easing (`s(t) = ½·(1 − cos(2π·t/T + φ))`), so the motion is analytic, deterministic
+    and starts/ends at rest — peak speed is ``π·|end−start|/T`` (keep it ≲ 1.5 m/s for
+    a plausible walker). The lidar sees the standard single-circle person model.
+    """
+
+    start: tuple[float, float]
+    end: tuple[float, float]
+    radius: float = 0.18
+    period_s: float = 16.0
+    phase_rad: float = 0.0
+
+    def center(self, t: float) -> tuple[float, float]:
+        s = 0.5 * (1.0 - math.cos(2.0 * math.pi * t / self.period_s + self.phase_rad))
+        return (
+            self.start[0] + s * (self.end[0] - self.start[0]),
+            self.start[1] + s * (self.end[1] - self.start[1]),
+        )
+
+
+@dataclass(frozen=True)
+class FollowerSpec:
+    """A companion walking at a fixed body-frame offset from the robot.
+
+    The hard dynamics case: unlike a crossing walker, a follower is *quasi-static in
+    the sensor frame* — it occludes the same bearing scan after scan and gets
+    integrated into the map at every keyframe, the failure mode of someone walking
+    alongside the robot.
+    """
+
+    distance_m: float = 0.8
+    bearing_rad: float = 0.3
+    radius: float = 0.18
+
+
+#: Three walkers criss-crossing the default room *through* the robot's [0,3] × [0,2]
+#: workspace — close passes and brief large occlusions included, like a real café.
+DEFAULT_PEOPLE: tuple[PersonSpec, ...] = (
+    PersonSpec(start=(-1.5, -1.0), end=(4.5, 3.0), period_s=16.0),
+    PersonSpec(start=(4.0, -1.5), end=(-1.0, 3.5), period_s=18.0, phase_rad=math.pi / 2),
+    PersonSpec(start=(1.5, 3.5), end=(1.5, -1.5), period_s=12.0, phase_rad=math.pi),
+)
+
+
+@dataclass(frozen=True)
 class ScanSpec:
     """A planar lidar in a rectangular room enclosing the trajectory.
 
     The default room leaves 2–3 m of clearance around the default trajectory's
     [0, 3] × [0, 2] footprint; the 270° fan always sees at least two walls, so the
-    planar solve is never degenerate.
+    planar solve is never degenerate. ``people`` adds moving occluders (the *dynamic*
+    variant — ADR 0010's clean + noisy convention): beams hitting a walker return the
+    walker, not the wall, exactly like an unmasked person in front of the real lidar.
     """
 
     rate_hz: float = 10.0
@@ -230,6 +280,9 @@ class ScanSpec:
     noise_m: float = 0.01
     # Room walls: (x_min, x_max, y_min, y_max).
     room: tuple[float, float, float, float] = (-2.0, 5.0, -2.0, 4.0)
+    # Moving occluders; () / None = the clean variant.
+    people: tuple[PersonSpec, ...] = ()
+    follower: FollowerSpec | None = None
 
 
 def _noise_unit(beam: int, scan: int) -> float:
@@ -254,6 +307,28 @@ def _raycast_box(px: float, py: float, angle: float, room: tuple) -> float:
     return best
 
 
+def _raycast_circle(
+    px: float, py: float, dx: float, dy: float, cx: float, cy: float, radius: float
+) -> float:
+    """Distance along the unit ray (dx, dy) to a circle, or inf on a miss.
+
+    Returns the near intersection; the far one when the origin is inside (a walker
+    brushing the robot still produces a finite, physical return).
+    """
+    ox, oy = cx - px, cy - py
+    t_mid = ox * dx + oy * dy
+    d2 = ox * ox + oy * oy - t_mid * t_mid
+    h2 = radius * radius - d2
+    if h2 < 0.0:
+        return math.inf
+    h = math.sqrt(h2)
+    if t_mid - h > 0.0:
+        return t_mid - h
+    if t_mid + h > 0.0:
+        return t_mid + h
+    return math.inf
+
+
 def generate_scans(samples: list[Sample], spec: ScanSpec = ScanSpec()) -> list[tuple]:
     """Raycast scans at the ground-truth poses → `(t, ranges)` rows."""
     if not samples:
@@ -266,9 +341,23 @@ def generate_scans(samples: list[Sample], spec: ScanSpec = ScanSpec()) -> list[t
     out = []
     for k, s in enumerate(samples[::stride]):
         yaw = _yaw(s)
+        walkers = [(p.center(s.t), p.radius) for p in spec.people]
+        if spec.follower is not None:
+            f = spec.follower
+            a = yaw + f.bearing_rad
+            walkers.append(
+                (
+                    (s.px + f.distance_m * math.cos(a), s.py + f.distance_m * math.sin(a)),
+                    f.radius,
+                )
+            )
         ranges = []
         for i in range(spec.n_beams):
-            r = _raycast_box(s.px, s.py, yaw + angle_min + i * inc, spec.room)
+            a = yaw + angle_min + i * inc
+            r = _raycast_box(s.px, s.py, a, spec.room)
+            dx, dy = math.cos(a), math.sin(a)
+            for (cx, cy), radius in walkers:
+                r = min(r, _raycast_circle(s.px, s.py, dx, dy, cx, cy, radius))
             r += spec.noise_m * _noise_unit(i, k)
             ranges.append(r if spec.range_min <= r <= spec.range_max else math.inf)
         out.append((s.t, ranges))

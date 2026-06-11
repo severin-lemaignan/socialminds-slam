@@ -161,6 +161,9 @@ def run_matrix(
     results = []
     for seq in sequences:
         for system in systems:
+            if system.input == "imu" and seq.imu_csv is None and seq.bag is None:
+                print(f"skipping {system.name} on {seq.name}: no IMU stream")
+                continue
             if system.input == "scan" and seq.scan_csv is None and seq.bag_scan_topic is None:
                 print(f"skipping {system.name} on {seq.name}: no scan stream")
                 continue
@@ -284,6 +287,7 @@ def gather_sequences(
     seqs = []
     if synthetic or not (euroc or openloris):
         seqs.append(datasets.materialize_synthetic(workdir / "synthetic"))
+        seqs.append(datasets.materialize_synthetic_dynamic(workdir / "synthetic-dynamic"))
     for name in euroc:
         mav0 = fetch.locate_euroc(name)
         seqs.append(datasets.convert_euroc(mav0, workdir / name, name=name))

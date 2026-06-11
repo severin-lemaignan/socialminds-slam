@@ -170,6 +170,12 @@ multi-session mapping; hard-real-time hardening (thread pinning, pre-allocation)
 - ☑ Synthetic wheel-odometry + 2D-scan streams (deterministic imperfection model /
   room raycast): the CI self-test now gates `odom_dead_reckoning` and
   `scan_matching_3d` end-to-end, no downloads.
+- ☑ Dynamic-scan variant (`synthetic-dynamic`): walkers crossing the room + a
+  body-frame **follower** (the quasi-static hard case) occlude ~18 % of beams.
+  Measured: the scan front-end is robust to this unmasked (ATE 0.0613 vs 0.0614
+  clean — truncation band + keyframe diet), now CI-gated so the property can't
+  silently regress. Matches the real-data finding that people dominate the *depth*
+  error, not the scans (M5 masking remains the depth-path blocker).
 - ☐ Synthetic depth-camera scenario (raycast 2.5D world → depth images/clouds):
   CI coverage for the depth path, clean + noisy variants.
 - ☐ Python synthetic generator two-lidar mode (ADR 0009 noise-suite item; the Rust

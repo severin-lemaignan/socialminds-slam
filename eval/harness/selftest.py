@@ -10,7 +10,11 @@ check (ADR 0005) and the job CI runs:
 - ``odom-dead-reckoning`` replays the synthetic wheel odometry: visible drift (the
   imperfection model is real), but bounded and well under stationary;
 - ``scan-matching-3d`` registers the synthetic scans: beats the odometry floor and runs
-  faster than real time — the front-end itself, exercised on every CI run.
+  faster than real time — the front-end itself, exercised on every CI run;
+- on the **dynamic** variant (walkers + a body-frame follower occluding ~18 % of beams)
+  the front-end stays accurate: its measured robustness to unmasked dynamics (the
+  truncation band + keyframed integration), gated so a regression of that property
+  fails CI.
 
 Run: ``python -m harness.selftest`` (from ``eval/``).
 """
@@ -46,6 +50,12 @@ class Gates:
     scan3d_ate_max: float = 0.12
     scan3d_beats_odom_ratio: float = 0.8
     scan3d_min_real_time_factor: float = 1.0
+    # Dynamic-scan robustness: with ~18 % of beams returning walkers instead of walls
+    # the error must stay near the clean run (observed 0.062 vs 0.061 — the truncation
+    # band + keyframe diet reject the contamination). The ratio is the tripwire: it
+    # fails if that robustness property regresses, long before the absolute bound.
+    scan3d_dynamic_ate_max: float = 0.12
+    scan3d_dynamic_vs_clean_ratio: float = 1.5
 
 
 def run(workdir: Path, gates: Gates = Gates()) -> bool:
@@ -72,6 +82,12 @@ def run(workdir: Path, gates: Gates = Gates()) -> bool:
         benchmark.SystemSpec("scan_matching_3d", "scan-matching-3d", input="scan"),
         **common,
     )
+    dyn_seq = datasets.materialize_synthetic_dynamic(workdir / "synthetic-dynamic")
+    scan3d_dyn = benchmark.run_case(
+        dyn_seq,
+        benchmark.SystemSpec("scan_matching_3d", "scan-matching-3d", input="scan"),
+        **common,
+    )
 
     print(f"sequence: {seq.duration_s:.0f} s synthetic, {seq.source}")
     print(f"  stationary           ATE rmse: {stat.ate_rmse_m.mean:.4f}")
@@ -83,6 +99,7 @@ def run(workdir: Path, gates: Gates = Gates()) -> bool:
         f"  scan-matching-3d     ATE rmse: {scan3d.ate_rmse_m.mean:.4f}  "
         f"({scan3d.real_time_factor.mean:.0f}x real-time)"
     )
+    print(f"  scan-matching-3d     ATE rmse: {scan3d_dyn.ate_rmse_m.mean:.4f}  (dynamic scans)")
     print(
         f"  dead-reckoning  compute: {dr.real_time_factor.mean:.0f}x real-time, "
         f"p99 {dr.latency_p99_us.mean:.2f} us, peak {dr.peak_rss_mb.mean:.1f} MB"
@@ -134,6 +151,18 @@ def run(workdir: Path, gates: Gates = Gates()) -> bool:
             "scan-matching-3d runs in real time",
             scan3d.real_time_factor.mean >= gates.scan3d_min_real_time_factor,
             f"{scan3d.real_time_factor.mean:.1f} >= {gates.scan3d_min_real_time_factor}",
+        ),
+        (
+            "scan-matching-3d error bounded on dynamic scans",
+            scan3d_dyn.ate_rmse_m.mean <= gates.scan3d_dynamic_ate_max,
+            f"{scan3d_dyn.ate_rmse_m.mean:.4f} <= {gates.scan3d_dynamic_ate_max}",
+        ),
+        (
+            "scan-matching-3d robust to unmasked dynamics",
+            scan3d_dyn.ate_rmse_m.mean
+            <= gates.scan3d_dynamic_vs_clean_ratio * scan3d.ate_rmse_m.mean,
+            f"{scan3d_dyn.ate_rmse_m.mean:.4f} <= "
+            f"{gates.scan3d_dynamic_vs_clean_ratio} * {scan3d.ate_rmse_m.mean:.4f}",
         ),
     ]
     ok = True

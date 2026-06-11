@@ -90,6 +90,38 @@ def materialize_synthetic(workdir: Path, spec=None) -> Sequence:
     )
 
 
+def materialize_synthetic_dynamic(workdir: Path, spec=None) -> Sequence:
+    """The *dynamic* scan variant (ADR 0010's clean + noisy convention).
+
+    Same trajectory, but the scans see walkers crossing the room **and** a follower
+    at a fixed body-frame offset (the quasi-static hard case) — ~18 % of beams return
+    a person instead of a wall. Scan-only: it exists to measure the front-end's
+    robustness to unmasked dynamics, next to the clean sequence's precision number.
+    """
+    from . import synthetic
+
+    spec = spec or synthetic.TrajectorySpec()
+    samples = synthetic.generate(spec)
+    workdir = Path(workdir)
+    workdir.mkdir(parents=True, exist_ok=True)
+    gt_tum = workdir / "groundtruth.tum"
+    scan_csv = workdir / "scan.csv"
+    scan_spec = synthetic.ScanSpec(
+        people=synthetic.DEFAULT_PEOPLE, follower=synthetic.FollowerSpec()
+    )
+    synthetic.write_groundtruth_tum(samples, gt_tum)
+    synthetic.write_scan_csv(synthetic.generate_scans(samples, scan_spec), scan_csv, scan_spec)
+    return Sequence(
+        name="synthetic-dynamic",
+        source="synthetic",
+        imu_csv=None,
+        groundtruth_tum=gt_tum,
+        duration_s=spec.duration_s,
+        has_gyro=False,
+        scan_csv=scan_csv,
+    )
+
+
 # --------------------------------------------------------------------------------------
 # EuRoC MAV (ETH ASL format: a `mav0/` directory)
 # --------------------------------------------------------------------------------------

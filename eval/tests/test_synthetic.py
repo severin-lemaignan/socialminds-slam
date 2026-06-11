@@ -114,3 +114,70 @@ def test_materialize_synthetic_provides_all_streams(tmp_path):
     assert seq.groundtruth_tum.exists()
     assert seq.scan_csv is not None and seq.scan_csv.exists()
     assert seq.odom_csv is not None and seq.odom_csv.exists()
+
+
+# --------------------------------------------------------------- dynamic objects
+
+
+def test_person_commutes_between_waypoints():
+    p = synthetic.PersonSpec(start=(0.0, 0.0), end=(4.0, 2.0), period_s=8.0)
+    assert p.center(0.0) == (0.0, 0.0)
+    x, y = p.center(4.0)  # half a period: at the far waypoint
+    assert abs(x - 4.0) < 1e-9 and abs(y - 2.0) < 1e-9
+    x, y = p.center(8.0)  # full period: back home
+    assert abs(x) < 1e-9 and abs(y) < 1e-9
+
+
+def test_walker_occludes_the_wall():
+    # A person standing 2 m in front of a stationary lidar: the central beam must
+    # return the person's near edge, not the wall.
+    spec = synthetic.ScanSpec(
+        noise_m=0.0,
+        people=(synthetic.PersonSpec(start=(2.0, 0.0), end=(2.0, 0.0), radius=0.2),),
+    )
+    sample = synthetic.Sample(
+        t=0.0, px=0.0, py=0.0, pz=0.0, qx=0.0, qy=0.0, qz=0.0, qw=1.0,
+        gx=0.0, gy=0.0, gz=0.0, ax=0.0, ay=0.0, az=0.0,
+    )
+    (_, ranges), = synthetic.generate_scans([sample], spec)
+    # The beam nearest bearing 0 (the fan has no exact 0 beam).
+    beam = round((0.0 - (-spec.fov_rad / 2.0)) / (spec.fov_rad / (spec.n_beams - 1)))
+    assert abs(ranges[beam] - 1.8) < 0.01  # 2.0 m to centre − 0.2 m radius
+
+
+def test_follower_occludes_a_fixed_bearing():
+    """The follower must shorten the same body-frame bearing in *every* scan."""
+    spec = synthetic.ScanSpec(noise_m=0.0, follower=synthetic.FollowerSpec())
+    samples = synthetic.generate(_short_spec())
+    scans = synthetic.generate_scans(samples, spec)
+    angle_min = -spec.fov_rad / 2.0
+    inc = spec.fov_rad / (spec.n_beams - 1)
+    f = spec.follower
+    beam = round((f.bearing_rad - angle_min) / inc)
+    expected = f.distance_m - f.radius
+    for _, ranges in scans:
+        assert abs(ranges[beam] - expected) < 0.01
+
+
+def test_dynamic_scans_are_contaminated_but_mostly_walls():
+    samples = synthetic.generate(_short_spec())
+    clean = synthetic.generate_scans(samples)
+    dyn = synthetic.generate_scans(
+        samples,
+        synthetic.ScanSpec(people=synthetic.DEFAULT_PEOPLE, follower=synthetic.FollowerSpec()),
+    )
+    total = hit = 0
+    for (_, rc), (_, rd) in zip(clean, dyn):
+        total += len(rc)
+        hit += sum(1 for a, b in zip(rc, rd) if b < a - 0.05)
+    # Real contamination (the dynamic variant means something) yet walls dominate
+    # (the sequence stays registrable).
+    assert 0.02 < hit / total < 0.5
+
+
+def test_materialize_synthetic_dynamic_is_scan_only(tmp_path):
+    seq = datasets.materialize_synthetic_dynamic(tmp_path, _short_spec())
+    assert seq.name == "synthetic-dynamic"
+    assert seq.imu_csv is None
+    assert seq.scan_csv is not None and seq.scan_csv.exists()
+    assert seq.groundtruth_tum.exists()
