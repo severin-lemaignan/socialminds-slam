@@ -354,6 +354,23 @@ type BagInputs = (
     Vec<slam_types::OdomSample>,
 );
 
+/// A bag IMU that names a non-base frame needs a rig to be interpreted: without one
+/// its samples are consumed as base-mounted, and a tilted IMU (e.g. OpenLORIS' d400,
+/// which rides the camera with gravity along -y) feeds the attitude filter sideways
+/// gravity — measured on cafe1-1: the front-end coasts every scan, ATE 7–9 m.
+fn warn_rigless_imu(topic: &str, frame_id: Option<&String>, rig_loaded: bool, base_frame: &str) {
+    let Some(frame_id) = frame_id else { return };
+    if rig_loaded || frame_id == base_frame {
+        return;
+    }
+    eprintln!(
+        "slam-replay: warning: IMU {topic} reports frame '{frame_id}' but no rig is \
+         loaded (--urdf / --rig-from-bag / rig: in the YAML config); its samples will \
+         be treated as mounted at '{base_frame}' — a tilted IMU corrupts attitude and \
+         every downstream registration"
+    );
+}
+
 /// Load every stream named by a run configuration (ADR 0013) from the bag, in one
 /// pass for scans+IMUs and one pass per depth camera.
 fn load_bag_inputs_from_config(
@@ -406,6 +423,12 @@ fn load_bag_inputs_from_config(
                     s.frame = frame;
                 }
             }
+            warn_rigless_imu(
+                frame_topic,
+                streams.imu_frames.get(frame_topic.as_str()),
+                rig.is_some(),
+                &cfg.rig.base_frame,
+            );
             imu.extend(stream);
         }
         imu.sort_by_key(|s| s.stamp);
@@ -510,6 +533,14 @@ fn load_bag_inputs(bag: &Path, args: &Args, rig: Option<&SensorRig>) -> Result<B
                 s.frame = frame;
             }
         }
+    }
+    if let Some(topic) = imu_topic {
+        warn_rigless_imu(
+            topic,
+            streams.imu_frames.get(topic.as_str()),
+            rig.is_some(),
+            &args.base_frame,
+        );
     }
     let mut clouds = Vec::new();
     if let Some(depth_topic) = &args.depth_topic {
