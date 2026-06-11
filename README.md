@@ -51,7 +51,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture and
 ```
 crates/                Rust workspace (the engine; middleware-independent core)
   slam-types/          Foundational types: time, SE(3), sensor frames, TUM I/O
-  slam-baseline/       Trivial reference baselines (stationary, IMU dead-reckoning)
+  slam-baseline/       Trivial reference baselines (stationary, IMU and wheel-odometry
+                       dead-reckoning)
   slam-rig/            Sensor rig: frames + extrinsics from URDF / tf_static
   slam-map/            3D map substrate: narrow-band TSDF behind a batch-level trait
   slam-frontend-scan/  Scan/depth front-end: PLICP, attitude, scan-to-submap, loops

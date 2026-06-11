@@ -123,9 +123,12 @@ Lock-free stage pipeline (crossbeam) + rayon; no stage blocks on a slower one (d
 fetch/cache, compute metrics, one-command report (real-data flags: `--euroc`/`--openloris`),
 reference scoring. **Ground-0 baseline archived** (`eval/reference/baselines/ground0/`):
 trivial baselines on MH_01_easy + cafe1-1 — the floor to beat. Remaining M1 operator step:
-run RTAB-Map/GLIM on the robot and archive the baseline. **M2 largely done**:
-`slam-gtsam-sys` + `slam-backend` (pose graphs, IMU preintegration, instrumented LM solves,
-synthetic-graph tests green locally); awaiting first green CI with the vendored GTSAM.
+run RTAB-Map/GLIM on the robot and archive the baseline. **M2 done**:
+`slam-gtsam-sys` + `slam-backend` (pose graphs, IMU preintegration, instrumented LM
+solves); GitLab CI green with the vendored GTSAM (CPU-only, cached after the first run).
+CI's synthetic self-test now also gates `odom_dead_reckoning` (wheel-odometry replay,
+ADR 0012 floor) and `scan_matching_3d` on generated scans+odometry — the front-end runs
+on every pipeline.
 **M3 largely done**: planar PLICP front-end (ADR 0007, **ATE 0.090/0.066 m** on
 cafe1-1/-2, archived as the **parity gate**) superseded by the full-3D pipeline
 (ADR 0010 stages 1–3b): IMU attitude + tilt-compensated 3D fans + ICP degeneracy guard,

@@ -55,8 +55,8 @@ arrives with the front-ends (M3).
 - ☑ **Wired into the live pipeline** (ADR 0010 stage 3b): pose graph over
   anchor-relative submaps, optimised on every verified loop closure; the `AnchorGraph`
   seam keeps the front-end C++-free.
-- ☐ Green CI run with GTSAM built CPU-only on the GitLab runner (config landed; first
-  pipeline pays the GTSAM compile, then it is cached)
+- ☑ Green CI run with GTSAM built CPU-only on the GitLab runner (2026-06-11: pipeline
+  green, GTSAM compile cached after the first run)
 
 **Done when:** a synthetic pose graph with loop constraints optimises to the known
 ground truth within tolerance, in CI (GTSAM built CPU-only).
@@ -93,7 +93,9 @@ ground truth within tolerance, in CI (GTSAM built CPU-only).
 - ☐ Hybrid per-point fan registration (ADR 0010 refinement): laser fans register
   against the 3D field where trilinear stencils are complete (camera-covered
   regions), 2D-field fallback elsewhere; the 2D field fades as RGB-D coverage grows.
-- ☐ Odometry as a graph factor and as a standalone baseline in the harness.
+- ◐ Odometry in the harness: ☑ standalone `odom_dead_reckoning` baseline (replays the
+  platform's own estimate, re-anchored at the init pose — the ADR 0012 floor; CI-gated
+  on synthetic wheel odometry). Still ☐: odometry as a graph factor.
 - ☐ CameraInfo distortion is currently ignored (OpenLORIS aligned depth is rectified,
   so correct there) — handle D for raw/unrectified streams or the robot's cameras.
 - ☐ Visual (feature/photometric) front-end — deliberately deferred; illumination
@@ -165,8 +167,10 @@ multi-session mapping; hard-real-time hardening (thread pinning, pre-allocation)
 - Every architectural decision gets an ADR.
 
 ### Evaluation & test-data debt
+- ☑ Synthetic wheel-odometry + 2D-scan streams (deterministic imperfection model /
+  room raycast): the CI self-test now gates `odom_dead_reckoning` and
+  `scan_matching_3d` end-to-end, no downloads.
 - ☐ Synthetic depth-camera scenario (raycast 2.5D world → depth images/clouds):
   CI coverage for the depth path, clean + noisy variants.
 - ☐ Python synthetic generator two-lidar mode (ADR 0009 noise-suite item; the Rust
   raycast harness already covers CI — optional completeness).
-- ☐ First green GitLab CI with the vendored GTSAM build (M2 carry-over).
