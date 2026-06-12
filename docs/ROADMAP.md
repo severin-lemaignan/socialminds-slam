@@ -230,9 +230,13 @@ positives on the corridor stress sequences.
   0.164→0.357 is gone) and with masking gives the best cafe ATE (0.166/0.148 vs
   0.169/0.151) — a real but ~2 % margin; flip the default only after the
   loop-verification work, re-measured. CPU EP ≈ 0.2 s/frame (offline-replay OK,
-  robot stays TensorRT). Still ☐: flow/depth mask *propagation*; per-class
-  thresholds + dilation tuning if pose-side gains are re-attempted; TensorRT EP
-  on the robot.
+  robot stays TensorRT). **Decided next (ADR 0016, masking altitude):** re-home
+  the mask from ingest-side rejection to a per-point tag — estimation unmasked,
+  durable products (TSDF integration, appearance signatures, re-localization
+  queries) take the full dynamic set; implementation + the "registration
+  unmasked / integration masked" A/B arm land with the signature work.
+  Still ☐: flow/depth mask *propagation*; per-class thresholds + dilation
+  tuning if pose-side gains are re-attempted; TensorRT EP on the robot.
   ⚠ Per ADR 0014: the robot's cameras sit near floor level, so masking may never
   be robust — it is an *enhancer*; every gate must also pass maskless.
 - ☐ Clean-3D-map: depth outlier filtering, post-hoc model filtering, compaction →

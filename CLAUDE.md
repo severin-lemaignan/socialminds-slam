@@ -72,6 +72,16 @@ Top priority is **loop closure / global consistency**. Full requirements in
    committed in `onnx/` (20 MB; ⚠ AGPL weights, revisit before redistribution).
    The square 640 export loses recall vs a rect export at the camera's shape —
    the input shape is read from the model, so a rect re-export drops in. — ADR 0015
+10. **Masking altitude** (ADR 0016, from the A/B in `docs/REPORT_MASKING_AB.md`):
+   masking moves from ingest-side rejection to a per-point tag applied per
+   consumer. **Estimation stays geometric and unmasked** (carving + robust
+   kernels won the A/B; masking starves registration of close structure and
+   fails under blur); **durable products take the full dynamic class set**:
+   TSDF integration (covers newborn submaps where carving has no evidence yet),
+   appearance signatures (a person in a descriptor is silent poison; chairs
+   move between visits), re-localization queries (one-shot — carving can never
+   help). Per-stage degradation to unmasked behaviour; every gate still passes
+   maskless. Implementation lands with the signature work. — ADR 0016
 
 ## Approach
 **Write the novel core ourselves** (orchestration, fusion, front-ends, map); **reuse the

@@ -49,6 +49,7 @@ Design priorities, in order:
 | Run configuration | **YAML selects sensors & ingest tuning — never calibration** | [0013](docs/adr/0013-run-configuration.md) |
 | Map decay | **Contradiction-driven free-space carving; no time decay; masking never load-bearing** | [0014](docs/adr/0014-map-update-and-decay-policy.md) |
 | Dynamics masking | **YOLO11s-seg via ONNX Runtime at depth ingest** (feature-gated, enhancer-only) | [0015](docs/adr/0015-dynamics-masking-yolo-onnx.md) |
+| Masking altitude | **Semantics gate durable products** (map, signatures, re-loc queries) **— never the pose estimate** | [0016](docs/adr/0016-masking-altitude.md) |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full picture and
 [docs/ROADMAP.md](docs/ROADMAP.md) for the milestone plan.

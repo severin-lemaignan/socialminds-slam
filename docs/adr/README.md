@@ -20,3 +20,5 @@ get the next number; superseded ones are marked, not deleted. Use
 | [0012](0012-imu-optional.md) | The IMU is an optional accuracy enhancer, never a prerequisite | accepted |
 | [0013](0013-run-configuration.md) | YAML run configuration: sensor-set selection, not calibration | accepted |
 | [0014](0014-map-update-and-decay-policy.md) | Map decay = contradiction-driven carving; no time decay; masking never load-bearing | accepted |
+| [0015](0015-dynamics-masking-yolo-onnx.md) | Dynamics masking: YOLO11-seg via ONNX Runtime at depth ingest (feature-gated) | accepted |
+| [0016](0016-masking-altitude.md) | Masking altitude: semantics gate durable products (map/signatures/re-loc), never the pose estimate | accepted |
